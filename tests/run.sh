@@ -172,7 +172,7 @@ tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 tmux_cmd set-option -pt "${ORDER_PANES[3]}" @ap_since $((now - 30))
 tmux_cmd set-option -pt "${ORDER_PANES[4]}" @ap_since $((now - 40))
 ORDER=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk '$2 != "session" {print $1}' | paste -sd, -)
-EXPECTED=$(printf '%s,' "${ORDER_PANES[1]}" "${ORDER_PANES[0]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" "${ORDER_PANES[4]}" | sed 's/,$//')
+EXPECTED=$(printf '%s,' "${ORDER_PANES[1]}" "${ORDER_PANES[0]}" "${ORDER_PANES[4]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" | sed 's/,$//')
 assert_eq "$EXPECTED" "$ORDER" '(g) orders state tiers and newest first'
 
 # (h) bare shells are stale and hidden.
@@ -287,7 +287,7 @@ SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
 [[ $SCREEN =~ (blocked|done|idle|working)[[:space:]]+pi[[:space:]]+ap-test: ]] || fail '(o) keeps agent locations visible'
 [[ $SCREEN =~ [0-9]+[smhd] ]] || fail '(o) keeps agent ages visible'
 ORDER=$(printf '%s\n' "$SCREEN" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' | sed -E 's/.*(blocked|done|idle|working)[[:space:]]+pi.*/\1/' | paste -sd, -)
-assert_eq 'blocked,blocked,done,idle,working' "$ORDER" '(o) preserves computed row order'
+assert_eq 'blocked,blocked,working,done,idle' "$ORDER" '(o) preserves computed row order'
 ok '(o) shows ordered agent rows'
 [[ $SCREEN != *'type to filter'* ]] || fail '(o) hides input in normal mode'
 ok '(o) hides input in normal mode'

@@ -61,9 +61,9 @@ list_agents() {
       esac
       case "$state" in
         blocked) tier=0 ;;
-        done) tier=1 ;;
-        idle) tier=2 ;;
-        working) tier=3 ;;
+        working) tier=1 ;;
+        done) tier=2 ;;
+        idle) tier=3 ;;
         *) continue ;;
       esac
       age=$(age_for "$since")
