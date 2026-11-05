@@ -135,7 +135,7 @@ interactive() {
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
-    --ansi --delimiter=$'\t' --with-nth=2.. --no-sort --reverse \
+    --ansi --delimiter=$'\t' --with-nth=2.. --tiebreak=index --reverse \
     "${fzf_colors[@]}" \
     --with-shell 'bash -c' --no-input --footer "$footer" \
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \

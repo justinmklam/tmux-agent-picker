@@ -308,6 +308,23 @@ for i in $(seq 1 100); do
 done
 assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(p) second Esc closes picker'
 
+# Filter mode ranks by match quality, so an exact hit in the lowest tier
+# outranks fuzzy hits above it. Normal mode keeps the computed order.
+tmux_cmd new-session -d -s tira -c "$TMP_ROOT" 'exec sleep 3600'
+PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-picker-rank "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+wait_for_normal "$PICKER" || fail '(r) picker did not start'
+tmux_cmd send-keys -t "$PICKER" /
+wait_for "$PICKER" 'type to filter' || fail '(r) filter mode did not open'
+tmux_cmd send-keys -t "$PICKER" t i r a
+sleep 0.3
+FIRST_ROW=$(tmux_cmd capture-pane -p -t "$PICKER" | grep -E '^ *(>|▌)? *(blocked|done|idle|working|session)[[:space:]]' | head -n 1)
+[[ $FIRST_ROW =~ session[[:space:]]+tira ]] || { printf '%s\n' "$FIRST_ROW" >&2; fail '(r) filter ranks the exact match first'; }
+ok '(r) filter ranks the exact match first'
+tmux_cmd send-keys -t "$PICKER" Escape
+wait_for_normal "$PICKER" || fail '(r) Esc did not leave filter mode'
+tmux_cmd send-keys -t "$PICKER" Escape
+tmux_cmd kill-session -t tira
+
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-q "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-q '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(p) q picker did not start'
