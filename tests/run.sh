@@ -94,7 +94,18 @@ assert_eq pi "$(pane_option "$PI_PANE" '#{@ap_agent}')" '(a) stores agent'
 assert_eq working "$(pane_option "$PI_PANE" '#{@ap_state}')" '(a) stores state'
 assert_match '^[0-9]+$' "$(pane_option "$PI_PANE" '#{@ap_since}')" '(a) stores numeric since'
 LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
-assert_match $'blocked codex[[:space:]]' "$LIST" '(a) lists another agent'
+assert_match $'blocked[[:space:]]+codex[[:space:]]' "$LIST" '(a) lists another agent'
+CODEX_ROW=$(printf '%s\n' "$LIST" | grep -F "$CODEX_PANE" | head -n 1)
+PI_ROW=$(printf '%s\n' "$LIST" | grep -F "$PI_PANE" | head -n 1)
+assert_eq ok "$(printf '%s\n' "$CODEX_ROW" | awk '$2 == "blocked" && $3 == "codex" && $4 ~ /^ap-test:/ { print "ok" }')" '(a) separates agent list columns'
+CODEX_LOCATION_COL=$(printf '%s\n' "$CODEX_ROW" | awk '{ match($0, /ap-test:[0-9]+\.[0-9]+/); print RSTART }')
+PI_LOCATION_COL=$(printf '%s\n' "$PI_ROW" | awk '{ match($0, /ap-test:[0-9]+\.[0-9]+/); print RSTART }')
+assert_match '^[0-9]+$' "$CODEX_LOCATION_COL" '(a) finds codex location column'
+assert_match '^[0-9]+$' "$PI_LOCATION_COL" '(a) finds pi location column'
+assert_eq "$CODEX_LOCATION_COL" "$PI_LOCATION_COL" '(a) aligns location columns'
+CODEX_AGE_COL=$(printf '%s\n' "$CODEX_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
+PI_AGE_COL=$(printf '%s\n' "$PI_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
+assert_eq "$CODEX_AGE_COL" "$PI_AGE_COL" '(a) aligns age columns'
 TMUX_PANE=$PI_PANE "$ROOT/bin/agent-state" set 'Bad Name!' working
 assert_eq pi "$(pane_option "$PI_PANE" '#{@ap_agent}')" '(a) rejects invalid agent without writing'
 
@@ -271,19 +282,22 @@ PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker "exec \"$INSTALL_ROOT/b
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(o) picker did not start'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
-[[ $SCREEN == *'blocked pi'* && $SCREEN == *'done pi'* && $SCREEN == *'idle pi'* && $SCREEN == *'working pi'* ]] || fail '(o) shows ordered agent rows'
-ORDER=$(printf '%s\n' "$SCREEN" | grep -E 'blocked pi|done pi|idle pi|working pi' | sed -E 's/.*(blocked|done|idle|working) pi.*/\1/' | paste -sd, -)
+[[ $SCREEN == *'Enter go  n new session'* ]] || fail '(o) shows normal footer with agent rows'
+[[ $SCREEN =~ blocked[[:space:]]+pi && $SCREEN =~ done[[:space:]]+pi && $SCREEN =~ idle[[:space:]]+pi && $SCREEN =~ working[[:space:]]+pi ]] || fail '(o) shows ordered agent rows'
+[[ $SCREEN =~ (blocked|done|idle|working)[[:space:]]+pi[[:space:]]+ap-test: ]] || fail '(o) keeps agent locations visible'
+[[ $SCREEN =~ [0-9]+[smhd] ]] || fail '(o) keeps agent ages visible'
+ORDER=$(printf '%s\n' "$SCREEN" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' | sed -E 's/.*(blocked|done|idle|working)[[:space:]]+pi.*/\1/' | paste -sd, -)
 assert_eq 'blocked,blocked,done,idle,working' "$ORDER" '(o) preserves computed row order'
 ok '(o) shows ordered agent rows'
 [[ $SCREEN != *'type to filter'* ]] || fail '(o) hides input in normal mode'
 ok '(o) hides input in normal mode'
-ROWS_BEFORE=$(printf '%s\n' "$SCREEN" | grep -E 'blocked pi|done pi|idle pi|working pi' || true)
+ROWS_BEFORE=$(printf '%s\n' "$SCREEN" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' || true)
 tmux_cmd send-keys -t "$PICKER" x
 sleep 0.2
-ROWS_AFTER=$(tmux_cmd capture-pane -p -t "$PICKER" | grep -E 'blocked pi|done pi|idle pi|working pi' || true)
+ROWS_AFTER=$(tmux_cmd capture-pane -p -t "$PICKER" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' || true)
 for state in blocked done idle working; do
-  before_count=$(printf '%s\n' "$ROWS_BEFORE" | grep -c "$state pi" || true)
-  after_count=$(printf '%s\n' "$ROWS_AFTER" | grep -c "$state pi" || true)
+  before_count=$(printf '%s\n' "$ROWS_BEFORE" | grep -Ec "$state[[:space:]]+pi" || true)
+  after_count=$(printf '%s\n' "$ROWS_AFTER" | grep -Ec "$state[[:space:]]+pi" || true)
   assert_eq "$before_count" "$after_count" "(o) keeps $state rows after unbound key"
 done
 

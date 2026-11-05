@@ -67,7 +67,7 @@ list_agents() {
         *) continue ;;
       esac
       age=$(age_for "$since")
-      display="$state $agent $session:$window.$pane_index $age $title"
+      display="$state"$'\t'"$agent"$'\t'"$session:$window.$pane_index"$'\t'"$age"$'\t'"$title"
       printf '%s\t%s\t%s\t%s\t%s\n' "$tier" "${since:-0}" "$pane" "$pane" "$display"
     done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
 
@@ -80,13 +80,38 @@ list_agents() {
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
     LC_ALL=C sort -t $'\t' -k1,1n -k2,2nr -k3,3 -k4,4 |
-    awk -F '\t' 'BEGIN { OFS="\t" } { print $4, $5 }'
+    awk -F '\t' '
+      {
+        pane[NR] = $4
+        if (NF >= 9) {
+          agent_row[NR] = 1
+          state[NR] = $5
+          agent[NR] = $6
+          location[NR] = $7
+          age[NR] = $8
+          title[NR] = $9
+          for (i = 10; i <= NF; i++) title[NR] = title[NR] OFS $i
+          if (length(agent[NR]) > max_agent) max_agent = length(agent[NR])
+          if (length(location[NR]) > max_location) max_location = length(location[NR])
+        } else {
+          display[NR] = $5
+        }
+      }
+      END {
+        for (i = 1; i <= NR; i++) {
+          if (agent_row[i]) {
+            printf "%s\t%s %-*s %-*s %-4s %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
+          } else {
+            printf "%s\t%s\n", pane[i], display[i]
+          }
+        }
+      }'
 }
 
 has_agent_rows() {
   local pane display state
   while IFS=$'\t' read -r pane display; do
-    state=${display%% *}
+    state=${display%%[[:space:]]*}
     case "$state" in
       blocked|done|idle|working) return 0 ;;
     esac
@@ -98,8 +123,8 @@ colour_agents() {
   local pane display state colour rest
   while IFS=$'\t' read -r pane display; do
     [[ -n $pane ]] || continue
-    state=${display%% *}
-    rest=${display#* }
+    state=${display%%[[:space:]]*}
+    rest=${display#*[[:space:]]}
     case "$state" in
       blocked) colour='\033[31m' ;;
       done) colour='\033[32m' ;;
@@ -107,7 +132,7 @@ colour_agents() {
       working) colour='\033[33m' ;;
       *) colour='' ;;
     esac
-    printf '%s\t%b%s\033[0m %s\n' "$pane" "$colour" "$state" "$rest"
+    printf '%s\t%b%s\033[0m\t%s\n' "$pane" "$colour" "$state" "$rest"
   done
 }
 
