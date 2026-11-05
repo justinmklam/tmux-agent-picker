@@ -236,19 +236,38 @@ tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 tmux_cmd set-option -pt "${ORDER_PANES[3]}" @ap_since $((now - 30))
 tmux_cmd set-option -pt "${ORDER_PANES[4]}" @ap_since $((now - 40))
 
-tmux_cmd source-file "$ROOT/tmux/tmux-agent-picker.tmux.conf"
+INSTALL_ROOT="$TMP_ROOT/tmux agent-picker-install"
+ln -s "$ROOT" "$INSTALL_ROOT"
+"$INSTALL_ROOT/tmux-agent-picker.tmux"
 # This harness has no attached tty client, so A7 uses its documented fallback:
 # verify the client-qualified binding here and rely on human verification for
 # pressing prefix+a and confirming only that client switches.
 KEY=$(tmux_cmd list-keys -T prefix a)
-assert_match 'display-popup.*agent-pick --client' "$KEY" '(q) binds popup to the pressing client'
+[[ $KEY == *"'$INSTALL_ROOT/bin/agent-pick'"* && $KEY == *"--client"* ]] || fail '(q) binding uses configured picker root'
+ok '(q) binding uses configured picker root'
+[[ -n $(tmux_cmd show-options -gv @ap_fzf_colors) ]] || fail '(q) loads theme from configured picker root'
+ok '(q) loads theme from configured picker root'
 tmux_cmd source-file "$ROOT/tmux/tmux-agent-picker.tmux.conf"
 for hook in pane-focus-in after-select-pane after-select-window client-session-changed; do
-  count=$(tmux_cmd show-hooks -g "$hook" 2>/dev/null | grep -c 'agent-state seen' || true)
+  count=$(tmux_cmd show-hooks -g "$hook" 2>/dev/null | grep -c 'bin/agent-state' || true)
   assert_eq 1 "$count" "(q) $hook hook is not duplicated"
+  hook_text=$(tmux_cmd show-hooks -g "$hook")
+  [[ $hook_text == *"$INSTALL_ROOT/bin/agent-state"* ]] || fail "(q) $hook hook uses configured picker root"
+  ok "(q) $hook hook uses configured picker root"
 done
 
-PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker "exec $ROOT/bin/agent-pick")
+# The private test server has no attached client, so select-pane does not
+# fire focus hooks. Re-run the stored hook directly to verify the configured
+# command handles the spaced install root and performs the state update.
+run_state "${ORDER_PANES[2]}" set pi done
+tmux_cmd set-hook -R -t "${ORDER_PANES[2]}" after-select-pane
+for i in $(seq 1 100); do
+  [[ $(pane_option "${ORDER_PANES[2]}" '#{@ap_state}') == idle ]] && break
+  sleep 0.05
+done
+assert_eq idle "$(pane_option "${ORDER_PANES[2]}" '#{@ap_state}')" '(q) stored focus hook changes done to idle'
+
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(o) picker did not start'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
@@ -289,7 +308,17 @@ for i in $(seq 1 100); do
 done
 assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(p) second Esc closes picker'
 
-PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker2 "exec $ROOT/bin/agent-pick")
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-q "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-q '#{pane_id}')
+wait_for "$PICKER" 'Enter go' || fail '(p) q picker did not start'
+tmux_cmd send-keys -t "$PICKER" q
+for i in $(seq 1 100); do
+  [[ $(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}') == 1 ]] && break
+  sleep 0.05
+done
+assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(p) q closes picker'
+
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker2 "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker2 '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(r) picker did not start'
 tmux_cmd send-keys -t "$PICKER" n
@@ -309,7 +338,7 @@ ok '(s) invalid directory keeps picker alive'
 # Successful Enter must resolve the query and create the selected session.
 ENTER_DIR="$TMP_ROOT/enter-dir"
 mkdir -p "$ENTER_DIR"
-PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker3 "exec $ROOT/bin/agent-pick")
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker3 "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker3 '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(r) success picker did not start'
 tmux_cmd send-keys -t "$PICKER" n
@@ -327,7 +356,7 @@ assert_eq "$ENTER_DIR" "$(tmux_cmd display-message -p -t enter-dir '#{session_pa
 for pane in "${ORDER_PANES[@]}"; do
   run_state "$pane" clear
 done
-PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-empty "exec $ROOT/bin/agent-pick")
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-empty "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-empty '#{pane_id}')
 wait_for "$PICKER" 'no agents' || fail '(o) empty list shows its footer'
 ok '(o) empty list shows its footer'

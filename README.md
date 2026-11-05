@@ -1,52 +1,88 @@
 # tmux agent picker
 
-## Install
+## Install with TPM
 
-Add this line to `~/.tmux.conf`, after the plugin block:
+Install [TPM](https://github.com/tmux-plugins/tpm), then add the plugin declaration alongside your other `@plugin` lines in `~/.tmux.conf`, above TPM's bootstrap line. The TPM bootstrap line should remain last:
 
 ```tmux
-source-file ~/Documents/personal/tmux-agent-picker/tmux/tmux-agent-picker.tmux.conf
+set -g @plugin 'YOUR_GITHUB_USER/tmux-agent-picker'
+run '~/.tmux/plugins/tpm/tpm'
 ```
 
-Reload tmux:
+Replace `YOUR_GITHUB_USER/tmux-agent-picker` with this repository's GitHub identifier. If TPM is not already installed, follow its installation instructions and keep the `run` line at the bottom of `~/.tmux.conf`.
+
+Reload tmux, then press `prefix + I` to install the plugin:
 
 ```sh
 tmux source-file ~/.tmux.conf
 ```
 
-Install the pi extension symlink:
+TPM installs the tmux integration under its plugin directory, normally `~/.tmux/plugins/tmux-agent-picker`. If your TPM installation uses a different `TMUX_PLUGIN_MANAGER_PATH`—for example with an XDG-based tmux configuration—substitute that directory in the paths below. TPM does not install the Pi extension, so create its symlink separately:
 
 ```sh
-ln -s ~/Documents/personal/tmux-agent-picker/pi/agent-state.ts ~/.pi/agent/extensions/agent-state.ts
+plugin_dir=$(tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH | cut -d= -f2-)
+ln -s "$plugin_dir/tmux-agent-picker/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
 ```
 
-In a running pi, run `/reload` so pi loads the extension. Press `prefix + a` to open the picker.
+In a running pi, run `/reload`, then press `prefix + a` to open the picker.
 
 Check the binding and focus hooks with:
 
 ```sh
 tmux list-keys -T prefix a
 for h in pane-focus-in after-select-pane after-select-window client-session-changed; do
-  tmux show-hooks -g "$h" | grep -c "agent-state seen"
+  tmux show-hooks -g "$h" | grep -c "bin/agent-state"
 done
 ```
 
-To uninstall, remove the `source-file` line from `~/.tmux.conf`, reload tmux, remove the pi symlink, and run `/reload` in pi:
+To uninstall, remove the `@plugin` line from `~/.tmux.conf`, then remove the active binding and hooks before reloading the file. This order lets any personal `prefix + a` binding in `~/.tmux.conf` be restored by the reload:
 
 ```sh
-rm ~/.pi/agent/extensions/agent-state.ts
+tmux unbind-key -T prefix a
+tmux set-hook -gu 'pane-focus-in[77]'
+tmux set-hook -gu 'after-select-pane[77]'
+tmux set-hook -gu 'after-select-window[77]'
+tmux set-hook -gu 'client-session-changed[77]'
+tmux set-environment -gu TMUX_AGENT_PICKER_ROOT
 tmux source-file ~/.tmux.conf
+rm ~/.pi/agent/extensions/agent-state.ts
 ```
+
+After reloading, press `prefix + alt + u` to ask TPM to clean the removed plugin, or delete its directory under `$TMUX_PLUGIN_MANAGER_PATH` manually.
+
+Run `/reload` in pi after removing the symlink. Restarting the tmux server instead also removes the binding and hooks. The `@ap_*` theme options remain set, and `focus-events` remains enabled, until the tmux server restarts. If this installation exclusively enabled them, you can unset the theme options with `tmux set -gu @ap_fzf_colors`, `tmux set -gu @ap_popup_style`, and `tmux set -gu @ap_popup_border_style`; leave `focus-events` unchanged if other configuration uses it.
+
+## Direct checkout installation
+
+For a checkout that is not managed by TPM, place it at `~/.config/tmux-agent-picker` or another directory of your choice. Add these lines to `~/.tmux.conf` after the plugin block, replacing the path if needed:
+
+```tmux
+set-environment -g TMUX_AGENT_PICKER_ROOT "$HOME/.config/tmux-agent-picker"
+source-file "$HOME/.config/tmux-agent-picker/tmux/tmux-agent-picker.tmux.conf"
+```
+
+Then reload tmux and create the Pi extension symlink from that checkout:
+
+```sh
+tmux source-file ~/.tmux.conf
+ln -s ~/.config/tmux-agent-picker/pi/agent-state.ts ~/.pi/agent/extensions/agent-state.ts
+```
+
+Run `/reload` in pi. To remove a direct checkout, remove its `set-environment` and `source-file` lines, then run the cleanup commands in the TPM uninstall section without removing an `@plugin` line. Paths with spaces are supported; for compatibility with tmux and fzf command parsing, avoid parentheses, quotes, dollar signs, hash signs, and backticks in the install path.
 
 The picker does not remove directories from zoxide. If you want to remove one, run `zoxide remove <directory>` yourself.
 
 ## Theming
 
+The paths in the remaining examples use TPM's default `~/.tmux/plugins` directory. If TPM reports a different `TMUX_PLUGIN_MANAGER_PATH`, substitute that directory in each command and example.
+
 The active theme is defined in:
 
 ```text
-~/Documents/personal/tmux-agent-picker/theme/catppuccin-mocha.tmux.conf
+~/.tmux/plugins/tmux-agent-picker/theme/catppuccin-mocha.tmux.conf
 ```
+
+For a direct checkout, substitute that checkout's `theme/` path.
 
 Edit `@ap_fzf_colors` for fzf's color names `@ap_popup_style` for the tmux popup style, and `@ap_popup_border_style` for the popup border. Both pickers read the fzf option from tmux, so you only need to change this one file. After changing it, reload tmux:
 
@@ -81,16 +117,16 @@ The list hides panes whose foreground command is a bare shell (`zsh`, `bash`, `f
 
 ### The contract
 
-From a process running inside the agent's tmux pane, call the following command on each lifecycle event:
+From a process running inside the agent's tmux pane, call the following command on each lifecycle event. These examples use the TPM path; substitute your direct checkout path when using the fallback installation:
 
 ```sh
-~/Documents/personal/tmux-agent-picker/bin/agent-state set <agent> <state>
+~/.tmux/plugins/tmux-agent-picker/bin/agent-state set <agent> <state>
 ```
 
 Call this when the agent exits:
 
 ```sh
-~/Documents/personal/tmux-agent-picker/bin/agent-state clear
+~/.tmux/plugins/tmux-agent-picker/bin/agent-state clear
 ```
 
 The process inherits `TMUX_PANE`, so the commands know which pane to update. The command always exits 0, prints nothing, and does nothing when the state is repeated. It is safe to call on every event and cannot break the agent. `<agent>` must match `^[a-z0-9_-]{1,16}$`; it appears in the list's agent column. There is nothing to register and you do not need to change `bin/agent-pick`.
@@ -109,7 +145,7 @@ Do not report `idle` after `done` yourself. The tmux focus hooks do that when yo
 
 ### Where to hook in
 
-Use the agent's own hook, plugin, or extension system. `pi/agent-state.ts` is the reference implementation: it gates on the root TUI session, serializes calls, and uses the absolute path to the state script. Put a new integration in `~/Documents/personal/tmux-agent-picker/<agent>/`, next to `pi/`.
+Use the agent's own hook, plugin, or extension system. `pi/agent-state.ts` is the reference implementation: it gates on the root TUI session, serializes calls, and resolves the state script relative to the extension checkout. Put a new integration in `~/.tmux/plugins/tmux-agent-picker/<agent>/`, next to `pi/`; substitute your direct checkout path when using the fallback installation.
 
 ### Claude Code example — unverified example
 
@@ -118,13 +154,13 @@ This is an unverified example for `~/.claude/settings.json`. Adapt its hook even
 ```json
 {
   "hooks": {
-    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state set claude working"}]}],
-    "PostToolUse": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state set claude working"}]}],
-    "PostToolUseFailure": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state set claude working"}]}],
-    "Notification": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state set claude blocked"}]}],
-    "Stop": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state set claude done"}]}],
-    "StopFailure": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state set claude done"}]}],
-    "SessionEnd": [{"hooks":[{"type":"command","command":"~/Documents/personal/tmux-agent-picker/bin/agent-state clear"}]}]
+    "UserPromptSubmit": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state set claude working"}]}],
+    "PostToolUse": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state set claude working"}]}],
+    "PostToolUseFailure": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state set claude working"}]}],
+    "Notification": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state set claude blocked"}]}],
+    "Stop": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state set claude done"}]}],
+    "StopFailure": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state set claude done"}]}],
+    "SessionEnd": [{"hooks":[{"type":"command","command":"~/.tmux/plugins/tmux-agent-picker/bin/agent-state clear"}]}]
   }
 }
 ```
@@ -142,18 +178,18 @@ In the agent's pane, save its pane id, set the state, and keep the agent process
 ```sh
 pane=$TMUX_PANE
 echo "$pane"
-~/Documents/personal/tmux-agent-picker/bin/agent-state set myagent blocked
+~/.tmux/plugins/tmux-agent-picker/bin/agent-state set myagent blocked
 sleep 60
 ```
 
 From another pane, run:
 
 ```sh
-~/Documents/personal/tmux-agent-picker/bin/agent-pick --list
+~/.tmux/plugins/tmux-agent-picker/bin/agent-pick --list
 ```
 
 Look for the `myagent` row. A pane whose foreground process is a bare shell is hidden, so use the check while the agent (or `sleep 60`) holds the pane. Paste the pane id printed earlier when you clean up from another pane; for example:
 
 ```sh
-~/Documents/personal/tmux-agent-picker/bin/agent-state clear %42
+~/.tmux/plugins/tmux-agent-picker/bin/agent-state clear %42
 ```

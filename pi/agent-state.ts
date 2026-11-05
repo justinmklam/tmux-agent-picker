@@ -1,8 +1,12 @@
 // @ts-nocheck
 
 import { execFile } from "node:child_process";
+import { realpathSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 
-const STATE_BIN = "/Users/justinlam/Documents/personal/tmux-agent-picker/bin/agent-state";
+const EXTENSION_PATH = realpathSync(fileURLToPath(import.meta.url));
+const STATE_BIN = join(dirname(dirname(EXTENSION_PATH)), "bin", "agent-state");
 const AGENT = "pi";
 
 type State = "working" | "blocked" | "done" | "idle";

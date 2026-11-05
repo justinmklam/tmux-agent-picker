@@ -104,8 +104,9 @@ format_zoxide() {
 }
 
 interactive() {
-  local client=${1:-} client_q theme fzf_colors=()
+  local client=${1:-} client_q theme root_q fzf_colors=()
   client_q=$(printf '%q' "$client")
+  root_q=$(printf '%q' "$ROOT")
   theme=$(theme_option @ap_fzf_colors)
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
   CLIENT=$client exec fzf \
@@ -113,8 +114,8 @@ interactive() {
     "${fzf_colors[@]}" \
     --border-label=' new session ' --prompt='dir> ' \
     --footer 'Enter open/switch  Esc back to agents' \
-    --bind "esc:become($ROOT/bin/agent-pick --client $client_q)" \
-    --bind "enter:transform:$ROOT/bin/agent-new --resolve {q} {}" \
+    --bind "esc:become($root_q/bin/agent-pick --client $client_q)" \
+    --bind "enter:transform:$root_q/bin/agent-new --resolve {q} {}" \
     < <(format_zoxide)
 }
 

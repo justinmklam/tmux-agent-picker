@@ -3,9 +3,9 @@ set -u
 
 TMUX_BIN=${TMUX_BIN:-tmux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-NORMAL_FOOTER='Enter go  n new session  / filter  j/k move  Esc close'
+NORMAL_FOOTER='Enter go  n new session  / filter  j/k move  q/Esc close'
 FILTER_FOOTER='type to filter  Enter go  Esc back'
-EMPTY_FOOTER='no agents — Enter go  n new session  / filter  j/k move  Esc close'
+EMPTY_FOOTER='no agents — Enter go  n new session  / filter  j/k move  q/Esc close'
 
 theme_option() {
   "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
@@ -125,8 +125,9 @@ go_to_pane() {
 }
 
 interactive() {
-  local client=${1:-} client_q agents footer theme fzf_colors=()
+  local client=${1:-} client_q agents footer theme root_q fzf_colors=()
   client_q=$(client_quote "$client")
+  root_q=$(printf '%q' "$ROOT")
   agents=$(list_agents)
   footer=$NORMAL_FOOTER
   has_agent_rows "$agents" || footer=$EMPTY_FOOTER
@@ -139,11 +140,12 @@ interactive() {
     --with-shell 'bash -c' --no-input --footer "$footer" \
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='right:50%' \
-    --bind "n:become($ROOT/bin/agent-new --client $client_q)" \
+    --bind "n:become($root_q/bin/agent-new --client $client_q)" \
     --bind "/:show-input+unbind(n,/,j,k)+change-footer($FILTER_FOOTER)" \
     --bind 'j:down,k:up' \
+    --bind 'q:abort' \
     --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind(n,/,j,k)+change-footer($footer)'; else echo abort; fi" \
-    --bind "enter:become($ROOT/bin/agent-pick --go {1} --client $client_q)" \
+    --bind "enter:become($root_q/bin/agent-pick --go {1} --client $client_q)" \
     < <(colour_agents <<< "$agents")
 }
 

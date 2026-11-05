@@ -12,6 +12,7 @@ Keep the implementation small and shell-first. Do not add a daemon, compiled com
 - `bin/agent-pick` — agent listing and modal fzf picker.
 - `bin/agent-new` — zoxide directory picker and switch-or-create session logic.
 - `pi/agent-state.ts` — pi lifecycle extension for the root TUI session.
+- `tmux-agent-picker.tmux` — TPM plugin entrypoint.
 - `tmux/tmux-agent-picker.tmux.conf` — tmux binding and focus hooks.
 - `theme/catppuccin-mocha.tmux.conf` — active theme values consumed by tmux and both fzf pickers.
 - `tests/run.sh` — end-to-end shell test harness using a private tmux server and zoxide data directory.
@@ -32,10 +33,11 @@ Keep the implementation small and shell-first. Do not add a daemon, compiled com
 
    ```sh
    bash -n bin/* \
-     tests/run.sh
+     tests/run.sh \
+     tmux-agent-picker.tmux
    ```
 
-5. If `shellcheck` is installed, run it against `bin/*` and `tests/run.sh`. Do not claim ShellCheck validation when it is unavailable.
+5. If `shellcheck` is installed, run it against `bin/*`, `tests/run.sh`, and `tmux-agent-picker.tmux`. Do not claim ShellCheck validation when it is unavailable.
 6. After tmux configuration changes, reload the active configuration and verify the binding and hooks:
 
    ```sh
