@@ -1,0 +1,150 @@
+#!/usr/bin/env bash
+set -u
+
+TMUX_BIN=${TMUX_BIN:-tmux}
+ROOT=$(cd "$(dirname "$0")/.." && pwd)
+
+theme_option() {
+  "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
+}
+
+session_name_taken() {
+  local candidate=$1 existing
+  while IFS= read -r existing; do
+    [[ $existing == "$candidate" ]] && return 0
+  done < <($TMUX_BIN list-sessions -F '#{session_name}' 2>/dev/null || true)
+  return 1
+}
+
+open_directory() {
+  local dir=$1 client=${2:-} normalized base name suffix session_id existing_name existing_path
+
+  if [[ $dir == '~'/* || $dir == '~' ]]; then
+    dir="$HOME${dir#\~}"
+  fi
+  if ! normalized=$(cd -- "$dir" 2>/dev/null && pwd); then
+    printf 'agent-new: no such directory: %s\n' "$dir" >&2
+    return 1
+  fi
+
+  local format=$'#{session_id}\t#{session_name}\t#{session_path}'
+  while IFS=$'\t' read -r session_id existing_name existing_path; do
+    if [[ $existing_path == "$normalized" ]]; then
+      if [[ -n $client ]]; then
+        $TMUX_BIN switch-client -c "$client" -t "$session_id" >/dev/null 2>&1 || true
+      fi
+      printf '%s\n' "$existing_name"
+      return 0
+    fi
+  done < <($TMUX_BIN list-sessions -F "$format" 2>/dev/null || true)
+
+  base=${normalized##*/}
+  name=${base//./_}
+  name=${name//:/_}
+  [[ -n $name ]] || name=session
+  suffix=1
+  while session_name_taken "$name"; do
+    suffix=$((suffix + 1))
+    name="${base//./_}"
+    name=${name//:/_}
+    name="$name-$suffix"
+  done
+
+  session_id=$($TMUX_BIN new-session -d -P -F '#{session_id}' -s "$name" -c "$normalized" 2>/dev/null) || return 1
+  if command -v zoxide >/dev/null 2>&1; then
+    zoxide add "$normalized" >/dev/null 2>&1 || true
+  fi
+  if [[ -n $client ]]; then
+    $TMUX_BIN switch-client -c "$client" -t "$session_id" >/dev/null 2>&1 || true
+  fi
+  printf '%s\n' "$name"
+}
+
+resolve_directory() {
+  local query=${1:-} selected=${2:-} choice
+  if [[ $query == /* || $query == '~'* || $query == .* ]]; then
+    choice=$query
+  else
+    choice=$selected
+  fi
+  if [[ $choice == '~'/* || $choice == '~' ]]; then
+    choice="$HOME${choice#\~}"
+  fi
+  if [[ -d $choice ]]; then
+    # fzf substitutes these placeholders when it runs the become action;
+    # user paths never appear in the action returned by this transform.
+    printf 'become(%q --open-sel --client %q {q} {})' "$ROOT/bin/agent-new" "${CLIENT:-}"
+  else
+    printf 'change-footer(no such directory)'
+  fi
+}
+
+open_selection() {
+  local query=${1:-} selected=${2:-} choice client=${CLIENT:-}
+  if [[ $query == /* || $query == '~'* || $query == .* ]]; then
+    choice=$query
+  else
+    choice=$selected
+  fi
+  open_directory "$choice" "$client"
+}
+
+format_zoxide() {
+  local directory
+  while IFS= read -r directory; do
+    [[ -n $directory ]] || continue
+    if [[ $directory == "$HOME"/* ]]; then
+      printf '~/%s\n' "${directory#"$HOME"/}"
+    elif [[ $directory == "$HOME" ]]; then
+      printf '~\n'
+    else
+      printf '%s\n' "$directory"
+    fi
+  done < <(zoxide query -l 2>/dev/null || true)
+}
+
+interactive() {
+  local client=${1:-} client_q theme fzf_colors=()
+  client_q=$(printf '%q' "$client")
+  theme=$(theme_option @ap_fzf_colors)
+  [[ -n $theme ]] && fzf_colors=(--color="$theme")
+  CLIENT=$client exec fzf \
+    --reverse --no-sort --with-shell 'bash -c' \
+    "${fzf_colors[@]}" \
+    --border-label=' new session ' --prompt='dir> ' \
+    --footer 'Enter open/switch  Esc back to agents' \
+    --bind "esc:become($ROOT/bin/agent-pick --client $client_q)" \
+    --bind "enter:transform:$ROOT/bin/agent-new --resolve {q} {}" \
+    < <(format_zoxide)
+}
+
+case "${1:-}" in
+  --open)
+    dir=${2:-}
+    [[ -n $dir ]] || exit 1
+    if [[ ${3:-} == --client ]]; then
+      open_directory "$dir" "${4:-}"
+    else
+      open_directory "$dir"
+    fi
+    exit $?
+    ;;
+  --resolve)
+    CLIENT=${CLIENT:-}
+    resolve_directory "${2:-}" "${3:-}"
+    ;;
+  --open-sel)
+    shift
+    client=''
+    if [[ ${1:-} == --client ]]; then
+      client=${2:-}
+      shift 2
+    fi
+    CLIENT=$client open_selection "${1:-}" "${2:-}"
+    ;;
+  *)
+    client=''
+    [[ ${1:-} == --client ]] && client=${2:-}
+    interactive "$client"
+    ;;
+esac

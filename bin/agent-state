@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+set -u
+
+# This command is deliberately best-effort: lifecycle reporting must never break an agent.
+TMUX_BIN=${TMUX_BIN:-tmux}
+
+pane_for_command() {
+  if [[ $# -gt 0 && -n ${1:-} ]]; then
+    printf '%s\n' "$1"
+  else
+    printf '%s\n' "${TMUX_PANE:-}"
+  fi
+}
+
+command_name=${1:-}
+case "$command_name" in
+  set)
+    pane=${TMUX_PANE:-}
+    agent=${2:-}
+    state=${3:-}
+    [[ -n $pane ]] || exit 0
+    [[ $agent =~ ^[a-z0-9_-]{1,16}$ ]] || exit 0
+    case "$state" in
+      working|blocked|done|idle) ;;
+      *) exit 0 ;;
+    esac
+
+    current_agent=$($TMUX_BIN display-message -p -t "$pane" '#{@ap_agent}' 2>/dev/null || true)
+    current_state=$($TMUX_BIN display-message -p -t "$pane" '#{@ap_state}' 2>/dev/null || true)
+    if [[ $current_agent == "$agent" && $current_state == "$state" ]]; then
+      exit 0
+    fi
+
+    since=$(date +%s)
+    $TMUX_BIN set-option -p -t "$pane" @ap_agent "$agent" \; \
+      set-option -p -t "$pane" @ap_state "$state" \; \
+      set-option -p -t "$pane" @ap_since "$since" >/dev/null 2>&1 || true
+    ;;
+  seen)
+    pane=$(pane_for_command "${2:-}")
+    [[ -n $pane ]] || exit 0
+    $TMUX_BIN if-shell -F -t "$pane" '#{==:#{@ap_state},done}' \
+      "set-option -p -t '$pane' @ap_state idle" >/dev/null 2>&1 || true
+    ;;
+  clear)
+    pane=$(pane_for_command "${2:-}")
+    [[ -n $pane ]] || exit 0
+    $TMUX_BIN set-option -p -u -t "$pane" @ap_agent \; \
+      set-option -p -u -t "$pane" @ap_state \; \
+      set-option -p -u -t "$pane" @ap_since >/dev/null 2>&1 || true
+    ;;
+  *)
+    exit 0
+    ;;
+esac
+
+exit 0
