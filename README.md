@@ -73,9 +73,9 @@ The four states tell you:
 - **`idle`** — the agent is not running, or you have already looked at a finished agent. These appear after done agents.
 - **`working`** — the agent is actively handling a prompt. These appear last.
 
-The picker sorts by state tier (`blocked`, `done`, `idle`, `working`) and then by newest `@ap_since` within each tier. The pane focus hooks call `bin/agent-state seen` when you look at a pane. That changes `done` to `idle` without changing `@ap_since`, so the agent keeps its original finished-time position among idle agents.
+The picker sorts agent rows by state tier (`blocked`, `done`, `idle`, `working`) and then by newest `@ap_since` within each tier. Sessions without a visible stateful agent pane appear once as `session <name>` rows after the agent rows; selecting one switches to that session's active pane. The pane focus hooks call `bin/agent-state seen` when you look at a pane. That changes `done` to `idle` without changing `@ap_since`, so the agent keeps its original finished-time position among idle agents.
 
-The list hides panes whose foreground command is a bare shell (`zsh`, `bash`, `fish`, or `sh`). This removes stale rows after an agent exits without reporting `clear`. A pane running another program can still retain stale state until you clear it.
+The list hides panes whose foreground command is a bare shell (`zsh`, `bash`, `fish`, or `sh`). This removes stale agent rows after an agent exits without reporting `clear`; ordinary sessions are listed regardless of what their panes are running. A pane running another program can still retain stale state until you clear it.
 
 ## Adding an agent
 

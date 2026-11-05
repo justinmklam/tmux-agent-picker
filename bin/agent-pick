@@ -5,7 +5,7 @@ TMUX_BIN=${TMUX_BIN:-tmux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 NORMAL_FOOTER='Enter go  n new session  / filter  j/k move  Esc close'
 FILTER_FOOTER='type to filter  Enter go  Esc back'
-EMPTY_FOOTER='no agents — n new session  Esc close'
+EMPTY_FOOTER='no agents — Enter go  n new session  / filter  j/k move  Esc close'
 
 theme_option() {
   "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
@@ -28,27 +28,70 @@ age_for() {
   fi
 }
 
+session_has_visible_agent() {
+  local session=$1 state command
+  while IFS=$'\x1f' read -r state command; do
+    case "$state:$command" in
+      blocked:*|done:*|idle:*|working:*)
+        case "$command" in
+          zsh|bash|fish|sh) continue ;;
+          *) return 0 ;;
+        esac
+        ;;
+    esac
+  done < <($TMUX_BIN list-panes -s -t "$session" -F $'#{@ap_state}\x1f#{pane_current_command}' 2>/dev/null || true)
+  return 1
+}
+
+active_pane_for_session() {
+  local session=$1 pane
+  pane=$($TMUX_BIN display-message -p -t "$session" '#{pane_id}' 2>/dev/null || true)
+  printf '%s' "$pane"
+}
+
 list_agents() {
   local pane state since agent session window pane_index command title tier age display
+  local session_id session_name session_pane
   local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}'
-  while IFS=$'\x1f' read -r pane state since agent session window pane_index command title; do
-    [[ -n $pane && -n $state ]] || continue
-    case "$command" in
-      zsh|bash|fish|sh) continue ;;
-    esac
+  {
+    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title; do
+      [[ -n $pane && -n $state ]] || continue
+      case "$command" in
+        zsh|bash|fish|sh) continue ;;
+      esac
+      case "$state" in
+        blocked) tier=0 ;;
+        done) tier=1 ;;
+        idle) tier=2 ;;
+        working) tier=3 ;;
+        *) continue ;;
+      esac
+      age=$(age_for "$since")
+      display="$state $agent $session:$window.$pane_index $age $title"
+      printf '%s\t%s\t%s\t%s\t%s\n' "$tier" "${since:-0}" "$pane" "$pane" "$display"
+    done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
+
+    while IFS=$'\x1f' read -r session_id session_name; do
+      [[ -n $session_id && -n $session_name ]] || continue
+      session_has_visible_agent "$session_id" && continue
+      session_pane=$(active_pane_for_session "$session_id")
+      [[ -n $session_pane ]] || continue
+      printf '4\t0\t%s\t%s\tsession %s\n' "$session_name" "$session_pane" "$session_name"
+    done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
+  } |
+    LC_ALL=C sort -t $'\t' -k1,1n -k2,2nr -k3,3 -k4,4 |
+    awk -F '\t' 'BEGIN { OFS="\t" } { print $4, $5 }'
+}
+
+has_agent_rows() {
+  local pane display state
+  while IFS=$'\t' read -r pane display; do
+    state=${display%% *}
     case "$state" in
-      blocked) tier=0 ;;
-      done) tier=1 ;;
-      idle) tier=2 ;;
-      working) tier=3 ;;
-      *) continue ;;
+      blocked|done|idle|working) return 0 ;;
     esac
-    age=$(age_for "$since")
-    display="$state $agent $session:$window.$pane_index $age $title"
-    printf '%s\t%s\t%s\t%s\n' "$tier" "${since:-0}" "$pane" "$display"
-  done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true) |
-    LC_ALL=C sort -t $'\t' -k1,1n -k2,2nr -k3,3 |
-    awk -F '\t' 'BEGIN { OFS="\t" } { print $3, $4 }'
+  done <<< "${1:-}"
+  return 1
 }
 
 colour_agents() {
@@ -86,7 +129,7 @@ interactive() {
   client_q=$(client_quote "$client")
   agents=$(list_agents)
   footer=$NORMAL_FOOTER
-  [[ -n $agents ]] || footer=$EMPTY_FOOTER
+  has_agent_rows "$agents" || footer=$EMPTY_FOOTER
   theme=$(theme_option @ap_fzf_colors)
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 

@@ -160,7 +160,7 @@ tmux_cmd set-option -pt "${ORDER_PANES[1]}" @ap_since $((now - 10))
 tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 tmux_cmd set-option -pt "${ORDER_PANES[3]}" @ap_since $((now - 30))
 tmux_cmd set-option -pt "${ORDER_PANES[4]}" @ap_since $((now - 40))
-ORDER=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk '{print $1}' | paste -sd, -)
+ORDER=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk '$2 != "session" {print $1}' | paste -sd, -)
 EXPECTED=$(printf '%s,' "${ORDER_PANES[1]}" "${ORDER_PANES[0]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" "${ORDER_PANES[4]}" | sed 's/,$//')
 assert_eq "$EXPECTED" "$ORDER" '(g) orders state tiers and newest first'
 
@@ -170,6 +170,21 @@ run_state "$SHELL_PANE" set pi blocked
 SHELL_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
 [[ $SHELL_LIST != *"$SHELL_PANE"* ]] || fail '(h) hides bare shell panes'
 ok '(h) hides bare shell panes'
+
+# (h2) uninstrumented sessions appear once and can be targeted.
+PLAIN_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s plain-session -c "$TMP_ROOT" 'exec sleep 3600')
+tmux_cmd new-window -d -t plain-session: -n plain-second 'exec sleep 3600'
+tmux_cmd select-window -t plain-session:plain-second
+PLAIN_ACTIVE_PANE=$(tmux_cmd display-message -p -t plain-session '#{pane_id}')
+PLAIN_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 1 "$(printf '%s\n' "$PLAIN_LIST" | grep -c 'session plain-session' || true)" '(h2) lists an uninstrumented session once'
+assert_eq 1 "$(printf '%s\n' "$PLAIN_LIST" | grep -F -c "$PLAIN_ACTIVE_PANE"$'\tsession plain-session' || true)" '(h2) targets the active pane of an uninstrumented session'
+assert_eq 0 "$(printf '%s\n' "$PLAIN_LIST" | grep -c 'session ap-test' || true)" '(h2) does not duplicate a stateful session'
+# The private server has no attached tty client; client-qualified switching is
+# covered by the binding check below and requires manual verification.
+TMUX_PANE= "$ROOT/bin/agent-pick" --go "$PLAIN_ACTIVE_PANE"
+assert_eq 1 "$(pane_option "$PLAIN_ACTIVE_PANE" '#{pane_active}')" '(h2) accepts an uninstrumented session row target'
+tmux_cmd kill-session -t plain-session
 
 # (i)-(n) session opener behavior.
 mkdir -p "$TMP_ROOT/proj" "$TMP_ROOT/other/proj" "$TMP_ROOT/my.app" "$TMP_ROOT/x/proj"
