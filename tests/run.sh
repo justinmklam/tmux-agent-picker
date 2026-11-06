@@ -353,18 +353,36 @@ PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker2 "exec \"$INSTALL_ROOT/
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker2 '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(r) picker did not start'
 tmux_cmd send-keys -t "$PICKER" n
-wait_for "$PICKER" 'Enter open/switch' || fail '(r) directory picker did not open'
+wait_for "$PICKER" 'Enter new session' || fail '(r) directory picker did not open'
 ok '(r) n opens directory picker'
 tmux_cmd send-keys -t "$PICKER" Escape
 wait_for "$PICKER" 'Enter go' || fail '(r) Esc did not return to agents'
 ok '(r) Esc returns to agent picker'
 tmux_cmd send-keys -t "$PICKER" n
-wait_for "$PICKER" 'Enter open/switch' || fail '(s) directory picker did not reopen'
+wait_for "$PICKER" 'Enter new session' || fail '(s) directory picker did not reopen'
 tmux_cmd send-keys -t "$PICKER" -l -- '/no/such/dir'
 tmux_cmd send-keys -t "$PICKER" Enter
 wait_for "$PICKER" 'no such directory' || fail '(s) invalid directory was not reported'
 assert_eq 0 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(s) invalid directory keeps picker alive'
 ok '(s) invalid directory keeps picker alive'
+
+# Selecting an existing directory from the new-session picker creates a second session.
+PICKER_EXISTING_DIR="$TMP_ROOT/picker-existing"
+mkdir -p "$PICKER_EXISTING_DIR"
+OPENED=$("$ROOT/bin/agent-new" --open "$PICKER_EXISTING_DIR") || fail '(t) seeds an existing picker directory session'
+assert_eq picker-existing "$OPENED" '(t) seeds the existing picker session'
+PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-picker-existing "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+wait_for_normal "$PICKER" || fail '(t) existing-directory picker did not start'
+tmux_cmd send-keys -t "$PICKER" n
+wait_for "$PICKER" 'Enter new session' || fail '(t) existing-directory picker did not open'
+tmux_cmd send-keys -t "$PICKER" -l -- picker-existing
+tmux_cmd send-keys -t "$PICKER" Enter
+for i in $(seq 1 100); do
+  [[ $(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}' 2>/dev/null || true) == 1 ]] && break
+  sleep 0.05
+done
+assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}' 2>/dev/null || true)" '(t) opening an existing directory closes the picker'
+assert_eq "$PICKER_EXISTING_DIR" "$(tmux_cmd display-message -p -t picker-existing-2 '#{session_path}')" '(t) creates a new session for an existing directory'
 
 # Successful Enter must resolve the query and create the selected session.
 ENTER_DIR="$TMP_ROOT/enter-dir"
@@ -373,7 +391,7 @@ PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker3 "exec \"$INSTALL_ROOT/
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker3 '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(r) success picker did not start'
 tmux_cmd send-keys -t "$PICKER" n
-wait_for "$PICKER" 'Enter open/switch' || fail '(r) success directory picker did not open'
+wait_for "$PICKER" 'Enter new session' || fail '(r) success directory picker did not open'
 tmux_cmd send-keys -t "$PICKER" -l -- "$ENTER_DIR"
 tmux_cmd send-keys -t "$PICKER" Enter
 for i in $(seq 1 100); do

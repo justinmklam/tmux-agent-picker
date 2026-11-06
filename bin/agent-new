@@ -17,7 +17,7 @@ session_name_taken() {
 }
 
 open_directory() {
-  local dir=$1 client=${2:-} normalized base name suffix session_id existing_name existing_path
+  local dir=$1 client=${2:-} force_new=${3:-false} normalized base name suffix session_id existing_name existing_path
 
   if [[ $dir == '~'/* || $dir == '~' ]]; then
     dir="$HOME${dir#\~}"
@@ -29,7 +29,7 @@ open_directory() {
 
   local format=$'#{session_id}\t#{session_name}\t#{session_path}'
   while IFS=$'\t' read -r session_id existing_name existing_path; do
-    if [[ $existing_path == "$normalized" ]]; then
+    if [[ $existing_path == "$normalized" && $force_new != true ]]; then
       if [[ -n $client ]]; then
         $TMUX_BIN switch-client -c "$client" -t "$session_id" >/dev/null 2>&1 || true
       fi
@@ -86,7 +86,7 @@ open_selection() {
   else
     choice=$selected
   fi
-  open_directory "$choice" "$client"
+  open_directory "$choice" "$client" true
 }
 
 format_zoxide() {
@@ -113,7 +113,7 @@ interactive() {
     --reverse --no-sort --with-shell 'bash -c' \
     "${fzf_colors[@]}" \
     --border-label=' new session ' --prompt='dir> ' \
-    --footer 'Enter open/switch  Esc back to agents' \
+    --footer 'Enter new session  Esc back to agents' \
     --bind "esc:become($root_q/bin/agent-pick --client $client_q)" \
     --bind "enter:transform:$root_q/bin/agent-new --resolve {q} {}" \
     < <(format_zoxide)
