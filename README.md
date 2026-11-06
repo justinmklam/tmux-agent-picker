@@ -155,6 +155,19 @@ The picker sorts agent rows by state tier (`blocked`, `working`, `done`, `idle`)
 
 The list hides panes whose foreground command is a bare shell (`zsh`, `bash`, `fish`, or `sh`). This removes stale agent rows after an agent exits without reporting `clear`; ordinary sessions are listed regardless of what their panes are running. A pane running another program can still retain stale state until you clear it.
 
+## Picker keys
+
+| Key | Action |
+| --- | --- |
+| `Enter` | Go to the selected agent or session. |
+| `j` / `k` | Move the cursor down / up. |
+| `n` | Open the directory picker and switch to or create that session. |
+| `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. The session running the picker is refused so the popup cannot destroy itself. |
+| `/` | Enter filter mode; `n` and `x` type normally there. |
+| `q` / `Esc` | Close the picker. `Esc` first clears the query and leaves filter mode. |
+
+Killing a session terminates every window and pane in it, including unsaved work. The list reloads afterwards and keeps the picker open.
+
 ## Adding an agent
 
 ### The contract
