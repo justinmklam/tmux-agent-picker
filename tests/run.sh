@@ -106,6 +106,7 @@ assert_eq "$CODEX_LOCATION_COL" "$PI_LOCATION_COL" '(a) aligns location columns'
 CODEX_AGE_COL=$(printf '%s\n' "$CODEX_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
 PI_AGE_COL=$(printf '%s\n' "$PI_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
 assert_eq "$CODEX_AGE_COL" "$PI_AGE_COL" '(a) aligns age columns'
+assert_match $'\tblocked {2}codex {2}ap-test:[0-9]+\.[0-9]+ {2}[0-9]+[smhd]' "$CODEX_ROW" '(a) pads columns with a two-space gutter'
 TMUX_PANE=$PI_PANE "$ROOT/bin/agent-state" set 'Bad Name!' working
 assert_eq pi "$(pane_option "$PI_PANE" '#{@ap_agent}')" '(a) rejects invalid agent without writing'
 
@@ -137,6 +138,8 @@ run_state "$BLOCKED_PANE" seen
 assert_eq blocked "$(pane_option "$BLOCKED_PANE" '#{@ap_state}')" '(d) seen leaves blocked'
 run_state "$WORKING_PANE" seen
 assert_eq working "$(pane_option "$WORKING_PANE" '#{@ap_state}')" '(d) seen leaves working'
+IDLE_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$DONE_PANE" | head -n 1)
+assert_match $'\tidle {2}pi([[:space:]]|$)' "$IDLE_ROW" '(d) pads the state column with a two-space gutter'
 
 # (e) clear removes all options.
 run_state "$PI_PANE" clear

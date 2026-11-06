@@ -100,7 +100,7 @@ list_agents() {
       END {
         for (i = 1; i <= NR; i++) {
           if (agent_row[i]) {
-            printf "%s\t%s %-*s %-*s %-4s %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
+            printf "%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
           } else {
             printf "%s\t%s\n", pane[i], display[i]
           }
