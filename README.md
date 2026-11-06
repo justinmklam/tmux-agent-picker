@@ -86,6 +86,16 @@ ln -sf "$checkout/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
 
 Keep the `set -g @plugin` line and TPM `run` line in `~/.tmux.conf` as documented in the TPM install section, then reload tmux and run `/reload` in pi. TPM reports the plugin as already installed and never clones over your checkout.
 
+### Development commands
+
+```sh
+make test    # end-to-end harness on a private tmux server and zoxide data dir
+make check   # bash -n parse check, plus shellcheck when it is installed
+make reload  # tmux source-file ~/.tmux.conf
+```
+
+Run `make help` to list every target. `make test` never touches your real tmux server, sessions, or zoxide history.
+
 ### What to reload for each change
 
 | Changed file | Action |
@@ -94,12 +104,12 @@ Keep the `set -g @plugin` line and TPM `run` line in `~/.tmux.conf` as documente
 | `tmux/tmux-agent-picker.tmux.conf`, `theme/*.conf` | `tmux source-file ~/.tmux.conf`, or source the plugin entrypoint directly. |
 | `tmux-agent-picker.tmux` | `tmux source-file ~/.tmux.conf`. It re-exports `TMUX_AGENT_PICKER_ROOT`, which the binding and hooks capture at source time. |
 | `pi/agent-state.ts` | `/reload` in pi. |
-| Anything | `bash tests/run.sh`. The harness uses a private tmux server and zoxide data directory, so it does not touch your sessions. |
+| Anything | `make test`. The harness uses a private tmux server and zoxide data directory, so it does not touch your sessions. |
 
 Configuration changes need a reload because the binding and hook commands expand `$TMUX_AGENT_PICKER_ROOT` when the plugin entrypoint is sourced. Scripts under `bin/` do not:
 
 ```sh
-tmux source-file ~/.tmux.conf
+make reload
 ```
 
 ### TPM commands to avoid while developing
