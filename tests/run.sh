@@ -106,6 +106,7 @@ assert_eq "$CODEX_LOCATION_COL" "$PI_LOCATION_COL" '(a) aligns location columns'
 CODEX_AGE_COL=$(printf '%s\n' "$CODEX_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
 PI_AGE_COL=$(printf '%s\n' "$PI_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
 assert_eq "$CODEX_AGE_COL" "$PI_AGE_COL" '(a) aligns age columns'
+assert_match $'\tblocked {2}codex {2}ap-test:[0-9]+\.[0-9]+ {2}[0-9]+[smhd]' "$CODEX_ROW" '(a) pads columns with a two-space gutter'
 TMUX_PANE=$PI_PANE "$ROOT/bin/agent-state" set 'Bad Name!' working
 assert_eq pi "$(pane_option "$PI_PANE" '#{@ap_agent}')" '(a) rejects invalid agent without writing'
 
@@ -137,6 +138,8 @@ run_state "$BLOCKED_PANE" seen
 assert_eq blocked "$(pane_option "$BLOCKED_PANE" '#{@ap_state}')" '(d) seen leaves blocked'
 run_state "$WORKING_PANE" seen
 assert_eq working "$(pane_option "$WORKING_PANE" '#{@ap_state}')" '(d) seen leaves working'
+IDLE_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$DONE_PANE" | head -n 1)
+assert_match $'\tidle {2}pi([[:space:]]|$)' "$IDLE_ROW" '(d) pads the state column with a two-space gutter'
 
 # (e) clear removes all options.
 run_state "$PI_PANE" clear
@@ -177,6 +180,10 @@ assert_eq "$EXPECTED" "$ORDER" '(g) orders state tiers and newest first'
 
 # (h) bare shells are stale and hidden.
 SHELL_PANE=$(new_pane shell 'exec sh')
+for _ in $(seq 1 100); do
+  [[ $(pane_option "$SHELL_PANE" '#{pane_current_command}') == sh ]] && break
+  sleep 0.05
+done
 run_state "$SHELL_PANE" set pi blocked
 SHELL_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
 [[ $SHELL_LIST != *"$SHELL_PANE"* ]] || fail '(h) hides bare shell panes'
@@ -278,12 +285,19 @@ for i in $(seq 1 100); do
 done
 assert_eq idle "$(pane_option "${ORDER_PANES[2]}" '#{@ap_state}')" '(q) stored focus hook changes done to idle'
 
+# The hook test consumed the done row; restore it so (o) can assert the tier order.
+run_state "${ORDER_PANES[2]}" set pi done
+tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
+
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(o) picker did not start'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
 [[ $SCREEN == *'Enter go  n new session'* ]] || fail '(o) shows normal footer with agent rows'
-[[ $SCREEN =~ blocked[[:space:]]+pi && $SCREEN =~ done[[:space:]]+pi && $SCREEN =~ idle[[:space:]]+pi && $SCREEN =~ working[[:space:]]+pi ]] || fail '(o) shows ordered agent rows'
+[[ $SCREEN =~ blocked[[:space:]]+pi && $SCREEN =~ done[[:space:]]+pi && $SCREEN =~ idle[[:space:]]+pi && $SCREEN =~ working[[:space:]]+pi ]] || {
+  printf '%s\n' "$SCREEN" >&2
+  fail '(o) shows ordered agent rows'
+}
 [[ $SCREEN =~ (blocked|done|idle|working)[[:space:]]+pi[[:space:]]+ap-test: ]] || fail '(o) keeps agent locations visible'
 [[ $SCREEN =~ [0-9]+[smhd] ]] || fail '(o) keeps agent ages visible'
 ORDER=$(printf '%s\n' "$SCREEN" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' | sed -E 's/.*(blocked|done|idle|working)[[:space:]]+pi.*/\1/' | paste -sd, -)
@@ -291,21 +305,63 @@ assert_eq 'blocked,blocked,working,done,idle' "$ORDER" '(o) preserves computed r
 ok '(o) shows ordered agent rows'
 [[ $SCREEN != *'type to filter'* ]] || fail '(o) hides input in normal mode'
 ok '(o) hides input in normal mode'
-ROWS_BEFORE=$(printf '%s\n' "$SCREEN" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' || true)
-tmux_cmd send-keys -t "$PICKER" x
-sleep 0.2
-ROWS_AFTER=$(tmux_cmd capture-pane -p -t "$PICKER" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' || true)
-for state in blocked done idle working; do
-  before_count=$(printf '%s\n' "$ROWS_BEFORE" | grep -Ec "$state[[:space:]]+pi" || true)
-  after_count=$(printf '%s\n' "$ROWS_AFTER" | grep -Ec "$state[[:space:]]+pi" || true)
-  assert_eq "$before_count" "$after_count" "(o) keeps $state rows after unbound key"
+[[ $SCREEN == *'x kill'* ]] || fail '(o) footer advertises the kill key'
+ok '(o) footer advertises the kill key'
+
+# (o2) x kills the session under the cursor only after y/N confirmation.
+DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -c "$TMP_ROOT" 'exec sleep 3600')
+run_state "$DOOMED_PANE" set pi blocked
+tmux_cmd set-option -pt "$DOOMED_PANE" @ap_since "$(date +%s)"
+KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-killer "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+wait_for "$KILLER" 'Enter go' || fail '(o2) killer picker did not start'
+FIRST_ROW=$(tmux_cmd capture-pane -p -t "$KILLER" | grep -E 'blocked[[:space:]]+pi|session[[:space:]]' | head -n 1)
+[[ $FIRST_ROW == *doomed* ]] || {
+  printf '%s\n' "$FIRST_ROW" >&2
+  fail '(o2) newest blocked row sorts first'
+}
+tmux_cmd send-keys -t "$KILLER" x
+wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts before killing'
+ok '(o2) x prompts before killing'
+tmux_cmd send-keys -t "$KILLER" n
+wait_for_normal "$KILLER" || fail '(o2) declining returns to the picker'
+[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true) ]] || fail '(o2) declining keeps the session'
+ok '(o2) declining keeps the session'
+
+tmux_cmd send-keys -t "$KILLER" x
+wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts again after declining'
+tmux_cmd send-keys -t "$KILLER" y
+for i in $(seq 1 100); do
+  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true) ]] && break
+  sleep 0.05
 done
+assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true)" '(o2) confirmation kills the session'
+wait_for_normal "$KILLER" || fail '(o2) picker stays open after killing'
+for i in $(seq 1 100); do
+  SCREEN=$(tmux_cmd capture-pane -p -t "$KILLER")
+  [[ $SCREEN != *doomed* ]] && break
+  sleep 0.05
+done
+[[ $SCREEN != *doomed* ]] || {
+  printf '%s\n' "$SCREEN" >&2
+  fail '(o2) reload drops the killed session row'
+}
+ok '(o2) reload drops the killed session row'
+
+# (o3) the session running the picker is protected from the kill key.
+tmux_cmd send-keys -t "$KILLER" x
+wait_for "$KILLER" 'refusing to kill the current session' || fail '(o3) refuses to kill the current session'
+ok '(o3) refuses to kill the current session'
+tmux_cmd send-keys -t "$KILLER" z
+wait_for_normal "$KILLER" || fail '(o3) returns to the picker after refusing'
+[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- ap-test || true) ]] || fail '(o3) keeps the current session'
+ok '(o3) keeps the current session'
+tmux_cmd send-keys -t "$KILLER" q
 
 tmux_cmd send-keys -t "$PICKER" /
 wait_for "$PICKER" 'type to filter' || fail '(p) filter mode did not open'
-tmux_cmd send-keys -t "$PICKER" n X
-wait_for "$PICKER" 'nX' || fail '(p) query was not accepted'
-ok '(p) lets n type while filtering'
+tmux_cmd send-keys -t "$PICKER" n X x
+wait_for "$PICKER" 'nXx' || fail '(p) query was not accepted'
+ok '(p) lets n and x type while filtering'
 tmux_cmd send-keys -t "$PICKER" Escape
 wait_for_normal "$PICKER" || fail '(p) Esc did not leave filter mode'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")

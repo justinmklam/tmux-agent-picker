@@ -3,7 +3,7 @@ set -u
 
 TMUX_BIN=${TMUX_BIN:-tmux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-NORMAL_FOOTER='Enter go  n new session  / filter  j/k move  q/Esc close'
+NORMAL_FOOTER='Enter go  n new session  x kill session  / filter  j/k move  q/Esc close'
 FILTER_FOOTER='type to filter  Enter go  Esc back'
 EMPTY_FOOTER='no agents — Enter go  n new session  / filter  j/k move  q/Esc close'
 
@@ -100,7 +100,7 @@ list_agents() {
       END {
         for (i = 1; i <= NR; i++) {
           if (agent_row[i]) {
-            printf "%s\t%s %-*s %-*s %-4s %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
+            printf "%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
           } else {
             printf "%s\t%s\n", pane[i], display[i]
           }
@@ -140,6 +140,75 @@ client_quote() {
   printf '%q' "${1:-}"
 }
 
+tty_write() {
+  { printf "$@"; } > /dev/tty 2>/dev/null || true
+}
+
+read_tty_key() {
+  local answer=''
+  if [[ -t 0 ]]; then
+    IFS= read -r -n 1 answer || true
+  elif [[ -r /dev/tty ]]; then
+    IFS= read -r -n 1 answer < /dev/tty 2>/dev/null || true
+  fi
+  printf '%s' "$answer"
+}
+
+session_id_for_pane() {
+  "$TMUX_BIN" display-message -p -t "${1:-}" '#{session_id}' 2>/dev/null || true
+}
+
+current_session_id() {
+  local target=${TMUX_PANE:-}
+  if [[ -n $target ]]; then
+    session_id_for_pane "$target"
+  else
+    "$TMUX_BIN" display-message -p '#{session_id}' 2>/dev/null || true
+  fi
+}
+
+# Kill the session owning the pane under the cursor. Always returns 0: it runs
+# from an fzf binding that continues with a reload.
+kill_session_for_pane() {
+  local pane=${1:-} session_id session_name current answer
+  [[ -n $pane ]] || return 0
+  session_id=$(session_id_for_pane "$pane")
+  [[ -n $session_id ]] || return 0
+  session_name=$("$TMUX_BIN" display-message -p -t "$session_id" '#{session_name}' 2>/dev/null || true)
+  [[ -n $session_name ]] || session_name=$session_id
+
+  current=$(current_session_id)
+  if [[ -n $current && $session_id == "$current" ]]; then
+    tty_write 'agent-picker: refusing to kill the current session (%s)\n' "$session_name"
+    tty_write 'press any key to return'
+    read_tty_key >/dev/null
+    return 0
+  fi
+
+  tty_write 'kill session %s? [y/N] ' "$session_name"
+  answer=$(read_tty_key)
+  case "$answer" in
+    y | Y) ;;
+    *)
+      tty_write '\ncancelled\n'
+      return 0
+      ;;
+  esac
+
+  if "$TMUX_BIN" kill-session -t "$session_id" >/dev/null 2>&1; then
+    tty_write '\nkilled session %s\n' "$session_name"
+  else
+    tty_write '\nagent-picker: could not kill session %s\n' "$session_name"
+    tty_write 'press any key to return'
+    read_tty_key >/dev/null
+  fi
+  return 0
+}
+
+coloured_agents() {
+  list_agents | colour_agents
+}
+
 go_to_pane() {
   local pane=$1 client=${2:-}
   if [[ -n $client ]]; then
@@ -166,10 +235,11 @@ interactive() {
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='right:50%' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
-    --bind "/:show-input+unbind(n,/,j,k)+change-footer($FILTER_FOOTER)" \
+    --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows)" \
+    --bind "/:show-input+unbind(n,x,/,j,k)+change-footer($FILTER_FOOTER)" \
     --bind 'j:down,k:up' \
     --bind 'q:abort' \
-    --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind(n,/,j,k)+change-footer($footer)'; else echo abort; fi" \
+    --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind(n,x,/,j,k)+change-footer($footer)'; else echo abort; fi" \
     --bind "enter:become($root_q/bin/agent-pick --go {1} --client $client_q)" \
     < <(colour_agents <<< "$agents")
 }
@@ -177,6 +247,12 @@ interactive() {
 case "${1:-}" in
   --list)
     list_agents
+    ;;
+  --rows)
+    coloured_agents
+    ;;
+  --kill)
+    kill_session_for_pane "${2:-}"
     ;;
   --go)
     pane=${2:-}
