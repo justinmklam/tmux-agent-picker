@@ -5,11 +5,9 @@
 Install [TPM](https://github.com/tmux-plugins/tpm), then add the plugin declaration alongside your other `@plugin` lines in `~/.tmux.conf`, above TPM's bootstrap line. The TPM bootstrap line should remain last:
 
 ```tmux
-set -g @plugin 'YOUR_GITHUB_USER/tmux-agent-picker'
+set -g @plugin 'justinmklam/tmux-agent-picker'
 run '~/.tmux/plugins/tpm/tpm'
 ```
-
-Replace `YOUR_GITHUB_USER/tmux-agent-picker` with this repository's GitHub identifier. If TPM is not already installed, follow its installation instructions and keep the `run` line at the bottom of `~/.tmux.conf`.
 
 Reload tmux, then press `prefix + I` to install the plugin:
 
@@ -71,6 +69,50 @@ ln -s ~/.config/tmux-agent-picker/pi/agent-state.ts ~/.pi/agent/extensions/agent
 Run `/reload` in pi. To remove a direct checkout, remove its `set-environment` and `source-file` lines, then run the cleanup commands in the TPM uninstall section without removing an `@plugin` line. Paths with spaces are supported; for compatibility with tmux and fzf command parsing, avoid parentheses, quotes, dollar signs, hash signs, and backticks in the install path.
 
 The picker does not remove directories from zoxide. If you want to remove one, run `zoxide remove <directory>` yourself.
+
+## Developing against a TPM install
+
+You can keep the normal `@plugin` line and still edit a working checkout without reinstalling. TPM treats a plugin as installed when `$TMUX_PLUGIN_MANAGER_PATH/tmux-agent-picker` exists and contains a git remote, so a symlink from that directory to your checkout satisfies the check and tmux reads your live files on every reload.
+
+Move any TPM-managed copy aside first. Do not create the symlink inside an existing clone:
+
+```sh
+checkout=~/Documents/tmux-agent-picker   # replace with your checkout
+plugin_dir=$(tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH | cut -d= -f2-)
+mv "$plugin_dir/tmux-agent-picker" "$plugin_dir/tmux-agent-picker.bak" 2>/dev/null
+ln -s "$checkout" "$plugin_dir/tmux-agent-picker"
+ln -sf "$checkout/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
+```
+
+Keep the `set -g @plugin` line and TPM `run` line in `~/.tmux.conf` as documented in the TPM install section, then reload tmux and run `/reload` in pi. TPM reports the plugin as already installed and never clones over your checkout.
+
+### What to reload for each change
+
+| Changed file | Action |
+| --- | --- |
+| `bin/agent-pick`, `bin/agent-new`, `bin/agent-state` | Nothing. Each invocation runs the script fresh, so reopening the popup picks up the change. |
+| `tmux/tmux-agent-picker.tmux.conf`, `theme/*.conf` | `tmux source-file ~/.tmux.conf`, or source the plugin entrypoint directly. |
+| `tmux-agent-picker.tmux` | `tmux source-file ~/.tmux.conf`. It re-exports `TMUX_AGENT_PICKER_ROOT`, which the binding and hooks capture at source time. |
+| `pi/agent-state.ts` | `/reload` in pi. |
+| Anything | `bash tests/run.sh`. The harness uses a private tmux server and zoxide data directory, so it does not touch your sessions. |
+
+Configuration changes need a reload because the binding and hook commands expand `$TMUX_AGENT_PICKER_ROOT` when the plugin entrypoint is sourced. Scripts under `bin/` do not:
+
+```sh
+tmux source-file ~/.tmux.conf
+```
+
+### TPM commands to avoid while developing
+
+- `prefix + U` runs `git pull` inside the plugin directory, which is now your checkout. It is harmless when the branch is clean and in sync, but it can fail or conflict on a dirty tree with upstream commits. Pull manually instead.
+- `prefix + alt + u` skips the plugin while its `@plugin` line is present. If you remove that line and clean, TPM removes the symlink only, not the checkout, but you have to recreate the link.
+
+To validate the real TPM install and clone path without disturbing this setup, use a throwaway server with its own plugin directory, then run TPM's install in that server's config:
+
+```sh
+tmux -L tpmtest -f /dev/null new-session -d \; \
+  set-environment -g TMUX_PLUGIN_MANAGER_PATH /tmp/tpmtest-plugins
+```
 
 ## Theming
 
