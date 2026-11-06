@@ -180,6 +180,10 @@ assert_eq "$EXPECTED" "$ORDER" '(g) orders state tiers and newest first'
 
 # (h) bare shells are stale and hidden.
 SHELL_PANE=$(new_pane shell 'exec sh')
+for _ in $(seq 1 100); do
+  [[ $(pane_option "$SHELL_PANE" '#{pane_current_command}') == sh ]] && break
+  sleep 0.05
+done
 run_state "$SHELL_PANE" set pi blocked
 SHELL_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
 [[ $SHELL_LIST != *"$SHELL_PANE"* ]] || fail '(h) hides bare shell panes'
