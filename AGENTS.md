@@ -16,7 +16,10 @@ Keep the implementation small and shell-first. Do not add a daemon, compiled com
 - `tmux/tmux-agent-picker.tmux.conf` — tmux binding and focus hooks.
 - `theme/catppuccin-mocha.tmux.conf` — active theme values consumed by tmux and both fzf pickers.
 - `tests/run.sh` — end-to-end shell test harness using a private tmux server and zoxide data directory.
-- `README.md` — user installation, state model, theming, and integration documentation.
+- `README.md` — concise user-facing overview, install, usage, and uninstall.
+- `docs/DEVELOPMENT.md` — architecture, state model, theming, and development workflows.
+- `docs/AGENT_SUPPORT.md` — adding lifecycle reporting for other agents.
+- `docs/screencap.png` — picker screenshot used by `README.md`.
 - `.ai/` — implementation plans and completed plans. Do not rewrite completed plans.
 
 ## Development workflow
@@ -92,7 +95,7 @@ Both picker scripts read `@ap_fzf_colors` from tmux. The tmux binding reads the 
 
 ## Documentation
 
-Keep `README.md` synchronized with command names, paths, theme options, state meanings, and installation steps. Preserve exact commands and paths when editing technical documentation. Document unverified integrations as unverified examples.
+Keep `README.md` glanceable and synchronized with command names, paths, state meanings, and installation steps. Keep `docs/DEVELOPMENT.md` synchronized with technical behavior and theme options, and `docs/AGENT_SUPPORT.md` with agent-integration details. Preserve exact commands and paths when editing technical documentation. Document unverified integrations as unverified examples.
 
 ## Scope and safety
 
