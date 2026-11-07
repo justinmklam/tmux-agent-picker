@@ -18,10 +18,10 @@ Every agent below is matched by name — as the foreground process name, or as a
 | Agent | Process detection | Built-in state reporting |
 | --- | --- | --- |
 | pi | — | ✓ bundled extension |
-| claude | ✓ | — (unverified hook example) |
-| codex | ✓ | — |
-| copilot | ✓ | — |
-| agy | ✓ | — |
+| claude | ✓ | [✓ hooks](docs/AGENT_SUPPORT.md#claude-code) |
+| codex | ✓ | [✓ hooks](docs/AGENT_SUPPORT.md#codex-cli) |
+| copilot | ✓ | [✓ hooks](docs/AGENT_SUPPORT.md#github-copilot-cli) |
+| agy | ✓ | [✓ hooks](docs/AGENT_SUPPORT.md#agy-antigravity-cli) |
 | gemini | ✓ | — |
 | aider | ✓ | — |
 | opencode | ✓ | — |
@@ -36,7 +36,7 @@ set -g @ap_detect_agents 'claude codex copilot my-agent'
 set -g @ap_detect_agents 'off'
 ```
 
-Only pi ships with lifecycle reporting. Any other agent can report state by calling `bin/agent-state` on its lifecycle events — see [docs/AGENT_SUPPORT.md](docs/AGENT_SUPPORT.md).
+Only pi and the agents with shipped hook blocks report lifecycle state out of the box. Any other agent can report state by calling `bin/agent-hook` on its lifecycle events — see [docs/AGENT_SUPPORT.md](docs/AGENT_SUPPORT.md).
 
 ## Requirements
 
@@ -64,7 +64,7 @@ TPM does not install the pi extension, so link it separately:
 
 ```sh
 plugin_dir=$(tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH | cut -d= -f2-)
-ln -s "$plugin_dir/tmux-agent-picker/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
+ln -s "$plugin_dir/tmux-agent-picker/agents/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
 ```
 
 Run `/reload` in pi, then press `prefix + a`.
@@ -108,6 +108,7 @@ tmux set-hook -gu 'client-session-changed[77]'
 tmux set-environment -gu TMUX_AGENT_PICKER_ROOT
 tmux source-file ~/.tmux.conf
 rm ~/.pi/agent/extensions/agent-state.ts
+rm ~/.gemini/config/plugins/tmux-agent-picker
 ```
 
 Run `/reload` in pi. Press `prefix + alt + u` in tmux to let TPM remove the plugin directory, or delete it under `$TMUX_PLUGIN_MANAGER_PATH` yourself. Restarting the tmux server also clears the binding, hooks, theme options, and `focus-events`.

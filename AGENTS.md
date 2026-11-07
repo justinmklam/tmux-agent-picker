@@ -9,9 +9,14 @@ Keep the implementation small and shell-first. Do not add a daemon, compiled com
 ## Repository layout
 
 - `bin/agent-state` — best-effort tmux pane state writer. It supports `set`, `seen`, and `clear`.
+- `bin/agent-hook` — agent hook wrapper translating hook payloads into `bin/agent-state` writes.
 - `bin/agent-pick` — agent listing and modal fzf picker.
 - `bin/agent-new` — zoxide directory picker and switch-or-create session logic.
-- `pi/agent-state.ts` — pi lifecycle extension for the root TUI session.
+- `agents/pi/agent-state.ts` — pi lifecycle extension for the root TUI session.
+- `agents/claude/settings.hooks.json` — mergeable Claude Code hook block.
+- `agents/codex/hooks.json` — Codex CLI user-level hook file.
+- `agents/copilot/hooks.json` — GitHub Copilot CLI user-level hook file.
+- `agents/agy/` — agy plugin manifest, hook mapping, and conversation-gated hook shim.
 - `tmux-agent-picker.tmux` — TPM plugin entrypoint.
 - `tmux/tmux-agent-picker.tmux.conf` — tmux binding and focus hooks.
 - `theme/catppuccin-mocha.tmux.conf` — active theme values consumed by tmux and both fzf pickers.
@@ -64,6 +69,8 @@ The test harness must use a private tmux server, `TMUX_TMPDIR`, and `_ZO_DATA_DI
 - Repeated `set` calls must not refresh `@ap_since`.
 - `seen` changes only `done` to `idle` and preserves `@ap_since`.
 - Calls from the pi extension must remain serialized so lifecycle events cannot land out of order.
+- Agent hook configs must call `bin/agent-hook <agent> <verb>` and must not call `bin/agent-state` directly, so subagent gating and per-pane serialization stay in one place.
+- agy hook commands print exactly `{}` on stdout and must gate events by `conversationId`.
 - The extension reports only for the root pi TUI session. Do not make sub-agents overwrite the visible pane state.
 
 ### Picker behavior

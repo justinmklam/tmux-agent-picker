@@ -1,0 +1,5 @@
+{
+  "name": "tmux-agent-picker",
+  "version": "0.1.0",
+  "description": "Report agy lifecycle state to the tmux agent picker"
+}

@@ -1,0 +1,26 @@
+{
+  "description": "Report Codex lifecycle state to tmux-agent-picker",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex session", "timeout": 5 } ] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex prompt", "timeout": 5 } ] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex permission", "timeout": 5 } ] }
+    ],
+    "PostToolUse": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex activity", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex stop", "timeout": 5 } ] }
+    ],
+    "Interrupt": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex interrupt", "timeout": 3 } ] }
+    ],
+    "SessionEnd": [
+      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" codex end", "timeout": 3 } ] }
+    ]
+  }
+}

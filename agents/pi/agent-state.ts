@@ -6,7 +6,9 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const EXTENSION_PATH = realpathSync(fileURLToPath(import.meta.url));
-const STATE_BIN = join(dirname(dirname(EXTENSION_PATH)), "bin", "agent-state");
+// The extension lives at <checkout>/agents/pi/agent-state.ts.
+const EXTENSION_ROOT = dirname(dirname(dirname(EXTENSION_PATH)));
+const STATE_BIN = join(EXTENSION_ROOT, "bin", "agent-state");
 const AGENT = "pi";
 
 type State = "working" | "blocked" | "done" | "idle";

@@ -1,0 +1,9 @@
+{
+  "tmux-agent-picker": {
+    "SessionStart": [{"type": "command", "command": "${PLUGIN_ROOT}/hook session", "timeout": 5}],
+    "PreInvocation": [{"type": "command", "command": "${PLUGIN_ROOT}/hook prompt", "timeout": 5}],
+    "PreToolUse": [{"matcher": "ask_question", "hooks": [{"type": "command", "command": "${PLUGIN_ROOT}/hook permission", "timeout": 5}]}],
+    "PostToolUse": [{"matcher": "ask_question", "hooks": [{"type": "command", "command": "${PLUGIN_ROOT}/hook activity", "timeout": 5}]}],
+    "Stop": [{"type": "command", "command": "${PLUGIN_ROOT}/hook stop", "timeout": 5}]
+  }
+}

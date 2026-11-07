@@ -1,0 +1,105 @@
+#!/usr/bin/env bash
+set -u
+
+# Translate an agent hook payload into a best-effort pane state write.
+# This command is deliberately silent and always exits 0: lifecycle reporting
+# must never break or delay an agent.
+TMUX_BIN=${TMUX_BIN:-tmux}
+
+agent=${1:-}
+verb=${2:-}
+pane=${3:-${TMUX_PANE:-}}
+
+case "$agent" in
+  claude|codex|copilot|agy) ;;
+  *) exit 0 ;;
+esac
+case "$verb" in
+  session|prompt|permission|activity|stop|interrupt|end) ;;
+  *) exit 0 ;;
+esac
+[[ -n $pane ]] || exit 0
+
+# Read the payload without blocking when a hook runs with an interactive stdin.
+payload=''
+if [[ ! -t 0 ]]; then
+  payload=$(cat 2>/dev/null || true)
+fi
+
+json_field() {  # key payload; prints the first string value for the key
+  printf '%s' "$2" | sed -n 's/.*"'"$1"'"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1
+}
+
+# Hooks fired inside a subagent carry an id; only the root session owns the pane.
+agent_id=$(json_field agent_id "$payload")
+[[ -n $agent_id ]] || agent_id=$(json_field agentId "$payload")
+[[ -z $agent_id ]] || exit 0
+
+reason=$(json_field terminationReason "$payload")
+[[ -n $reason ]] || reason=$(json_field stopReason "$payload")
+[[ -n $reason ]] || reason=$(json_field stop_reason "$payload")
+[[ -n $reason ]] || reason=$(json_field reason "$payload")
+
+# Resolve the state writer.
+state_bin=${TMUX_AGENT_PICKER_BIN:-}
+if [[ -z $state_bin || ! -x $state_bin ]]; then
+  state_bin="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)/agent-state"
+fi
+if [[ ! -x $state_bin ]]; then
+  state_bin="${HOME:-}/.tmux/plugins/tmux-agent-picker/bin/agent-state"
+fi
+[[ -x $state_bin ]] || exit 0
+
+# Serialize writes per pane so lifecycle events cannot land out of order.
+runtime_dir=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}
+lock_root="$runtime_dir/tmux-agent-picker"
+if ! mkdir -p "$lock_root" 2>/dev/null; then
+  lock_root="${HOME:-}/.cache/tmux-agent-picker"
+  mkdir -p "$lock_root" 2>/dev/null || lock_root=''
+fi
+
+if [[ -n $lock_root ]]; then
+  lock="$lock_root/lock-${pane#%}"
+  tries=0
+  while ! mkdir "$lock" 2>/dev/null; do
+    tries=$((tries + 1))
+    if (( tries >= 20 )); then
+      rm -rf "$lock" 2>/dev/null || true
+      mkdir "$lock" 2>/dev/null || true
+      break
+    fi
+    sleep 0.05
+  done
+  # shellcheck disable=SC2064  # The lock path is final by the time the trap is set.
+  trap 'rmdir "$lock" 2>/dev/null || true' EXIT
+fi
+
+state=''
+case "$verb" in
+  session) state=idle ;;
+  prompt) state=working ;;
+  permission) state=blocked ;;
+  activity)
+    current=$(TMUX_PANE="$pane" "$TMUX_BIN" display-message -p -t "$pane" '#{@ap_state}' 2>/dev/null || true)
+    case "$current" in
+      done|idle) exit 0 ;;
+    esac
+    state=working
+    ;;
+  stop)
+    state=done
+    if [[ $agent == agy ]]; then
+      case "$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]')" in
+        user_canceled) state=idle ;;
+      esac
+    fi
+    ;;
+  interrupt) state=idle ;;
+  end)
+    TMUX_PANE="$pane" "$state_bin" clear >/dev/null 2>&1 || true
+    exit 0
+    ;;
+esac
+
+TMUX_PANE="$pane" "$state_bin" set "$agent" "$state" >/dev/null 2>&1 || true
+exit 0

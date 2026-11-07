@@ -105,6 +105,16 @@ run_state() {
   TMUX_PANE=$1 "$ROOT/bin/agent-state" "${@:2}"
 }
 
+json_valid() {
+  if command -v jq >/dev/null 2>&1; then
+    jq -e . "$1" >/dev/null 2>&1
+  elif command -v python3 >/dev/null 2>&1; then
+    python3 -m json.tool "$1" >/dev/null 2>&1
+  else
+    return 0
+  fi
+}
+
 # Create an executable symlink to sleep with a chosen process name so tests can
 # stand in for a native agent binary without installing one.
 agent_link() {
@@ -640,6 +650,334 @@ tmux_cmd set-option -gu @ap_detect_agents
 for pane in "$CLAUDE_PANE" "$CODEX_PANE" "$CODEX_CHILD_PANE" "$CODEX_DEPTH_PANE" "$NODE_PANE" "$MYTOOL_PANE"; do
   tmux_cmd kill-pane -t "$pane" 2>/dev/null || true
 done
+
+# (w) agent-hook maps hook verbs onto agent-state writes.
+hook() {  # pane agent verb payload
+  printf '%s' "$4" | TMUX_PANE=$1 TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" \
+    "$ROOT/bin/agent-hook" "$2" "$3"
+}
+
+HOOK_PANE=$(new_pane hook)
+ROOT_PAYLOAD='{"session_id":"s1","hook_event_name":"Stop"}'
+out=$(hook "$HOOK_PANE" claude session "$ROOT_PAYLOAD")
+assert_eq 0 "$?" '(w) session exits 0'
+assert_eq '' "$out" '(w) session prints nothing'
+assert_eq claude "$(pane_option "$HOOK_PANE" '#{@ap_agent}')" '(w) session stores agent'
+assert_eq idle "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) session maps to idle'
+for spec in 'prompt working' 'permission blocked' 'activity working' 'stop done' 'interrupt idle'; do
+  set -- $spec
+  out=$(hook "$HOOK_PANE" claude "$1" "$ROOT_PAYLOAD")
+  assert_eq 0 "$?" "(w) $1 exits 0"
+  assert_eq '' "$out" "(w) $1 prints nothing"
+  assert_eq "$2" "$(pane_option "$HOOK_PANE" '#{@ap_state}')" "(w) $1 maps to $2"
+done
+out=$(hook "$HOOK_PANE" claude end "$ROOT_PAYLOAD")
+assert_eq 0 "$?" '(w) end exits 0'
+assert_eq '' "$out" '(w) end prints nothing'
+assert_eq '' "$(pane_option "$HOOK_PANE" '#{@ap_agent}')" '(w) end removes agent'
+assert_eq '' "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) end removes state'
+assert_eq '' "$(pane_option "$HOOK_PANE" '#{@ap_since}')" '(w) end removes since'
+
+hook "$HOOK_PANE" claude stop "$ROOT_PAYLOAD" >/dev/null
+hook "$HOOK_PANE" claude activity "$ROOT_PAYLOAD" >/dev/null
+assert_eq done "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) activity keeps done'
+hook "$HOOK_PANE" claude permission "$ROOT_PAYLOAD" >/dev/null
+hook "$HOOK_PANE" claude activity "$ROOT_PAYLOAD" >/dev/null
+assert_eq working "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) activity resumes working after blocked'
+
+hook "$HOOK_PANE" claude stop '{"session_id":"s1","agent_id":"a1"}' >/dev/null
+assert_eq working "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) subagent stop is ignored'
+hook "$HOOK_PANE" claude stop '{"session_id":"s1","agentId":"a1"}' >/dev/null
+assert_eq working "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) camelCase subagent stop is ignored'
+
+hook "$HOOK_PANE" agy stop '{"conversationId":"root-1","terminationReason":"USER_CANCELED"}' >/dev/null
+assert_eq idle "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) agy user cancel maps to idle'
+hook "$HOOK_PANE" agy stop '{"conversationId":"root-1","terminationReason":"NO_TOOL_CALL"}' >/dev/null
+assert_eq done "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) agy normal stop maps to done'
+
+hook "$HOOK_PANE" claude prompt "$ROOT_PAYLOAD" >/dev/null
+BEFORE_NO_PANE=$(pane_option "$HOOK_PANE" '#{@ap_state}')
+out=$(hook '' claude permission "$ROOT_PAYLOAD")
+assert_eq 0 "$?" '(w) missing pane exits 0'
+assert_eq '' "$out" '(w) missing pane prints nothing'
+assert_eq "$BEFORE_NO_PANE" "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) missing pane changes nothing'
+printf '{}' | env -u TMUX_PANE TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" \
+  "$ROOT/bin/agent-hook" claude permission "$HOOK_PANE"
+assert_eq blocked "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) explicit pane argument is honoured'
+out=$(printf 'not json' | TMUX_PANE=$HOOK_PANE TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" \
+  "$ROOT/bin/agent-hook" claude bogus)
+assert_eq 0 "$?" '(w) unknown verb exits 0'
+assert_eq '' "$out" '(w) unknown verb prints nothing'
+assert_eq blocked "$(pane_option "$HOOK_PANE" '#{@ap_state}')" '(w) unknown verb changes nothing'
+out=$(printf '{}' | TMUX_PANE=$HOOK_PANE TMUX_AGENT_PICKER_BIN=/nonexistent \
+  "$ROOT/bin/agent-hook" claude session)
+assert_eq 0 "$?" '(w) missing agent-state exits 0'
+assert_eq '' "$out" '(w) missing agent-state prints nothing'
+
+HOOK_RUNTIME="$TMP_ROOT/hook-runtime"
+mkdir -p "$HOOK_RUNTIME"
+HOOK_PIDS=()
+for _ in $(seq 1 20); do
+  ( printf '{}' | XDG_RUNTIME_DIR="$HOOK_RUNTIME" TMUX_PANE=$HOOK_PANE \
+      TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" "$ROOT/bin/agent-hook" claude prompt ) &
+  HOOK_PIDS+=("$!")
+done
+HOOK_FAILED=0
+for pid in "${HOOK_PIDS[@]}"; do
+  wait "$pid" || HOOK_FAILED=1
+done
+assert_eq 0 "$HOOK_FAILED" '(w) concurrent hooks all exit 0'
+HOOK_LEFTOVER=''
+for _ in $(seq 1 20); do
+  HOOK_LEFTOVER=$(pgrep -f 'bin/agent-hook' || true)
+  [[ -z $HOOK_LEFTOVER ]] && break
+  sleep 0.05
+done
+assert_eq '' "$HOOK_LEFTOVER" '(w) concurrent hooks leave no process'
+assert_eq '' "$(find "$HOOK_RUNTIME/tmux-agent-picker" -maxdepth 1 -name 'lock-*' 2>/dev/null || true)" \
+  '(w) concurrent hooks release the lock'
+
+run_state "$HOOK_PANE" clear
+tmux_cmd kill-pane -t "$HOOK_PANE" 2>/dev/null || true
+
+# (x) Claude Code hook mapping and shipped settings block.
+CLAUDE_PANE=$(new_pane claude-hook)
+CLAUDE_PAYLOAD='{"session_id":"s1","transcript_path":"/tmp/t","cwd":"/tmp","hook_event_name":"Stop"}'
+for spec in 'SessionStart session idle' 'UserPromptSubmit prompt working' \
+  'PermissionRequest permission blocked' 'PostToolUse activity working' 'Stop stop done'; do
+  set -- $spec
+  out=$(hook "$CLAUDE_PANE" claude "$2" "$CLAUDE_PAYLOAD")
+  assert_eq 0 "$?" "(x) $1 exits 0"
+  assert_eq '' "$out" "(x) $1 prints nothing"
+  assert_eq "$3" "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" "(x) $1 maps to $3"
+done
+hook "$CLAUDE_PANE" claude permission "$CLAUDE_PAYLOAD" >/dev/null
+hook "$CLAUDE_PANE" claude stop "$CLAUDE_PAYLOAD" >/dev/null
+assert_eq done "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) Stop after blocked yields done'
+hook "$CLAUDE_PANE" claude prompt "$CLAUDE_PAYLOAD" >/dev/null
+hook "$CLAUDE_PANE" claude stop '{"session_id":"s1","agent_id":"a1","hook_event_name":"Stop"}' >/dev/null
+assert_eq working "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) subagent Stop leaves the state untouched'
+hook "$CLAUDE_PANE" claude end "$CLAUDE_PAYLOAD" >/dev/null
+assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_agent}')" '(x) SessionEnd removes agent'
+assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) SessionEnd removes state'
+assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_since}')" '(x) SessionEnd removes since'
+
+printf '%s' "$CLAUDE_PAYLOAD" | TMUX_AGENT_PICKER_ROOT=$ROOT TMUX_PANE=$CLAUDE_PANE \
+  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c '"$TMUX_AGENT_PICKER_ROOT/bin/agent-hook" claude prompt'
+assert_eq working "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) shipped command form runs'
+
+CLAUDE_SETTINGS="$ROOT/agents/claude/settings.hooks.json"
+[[ -f $CLAUDE_SETTINGS ]] || fail '(x) agents/claude/settings.hooks.json exists'
+json_valid "$CLAUDE_SETTINGS" || fail '(x) agents/claude/settings.hooks.json is valid JSON'
+ok '(x) agents/claude/settings.hooks.json is valid JSON'
+for spec in 'SessionStart session' 'UserPromptSubmit prompt' 'PermissionRequest permission' \
+  'PostToolUse activity' 'Stop stop' 'StopFailure stop' 'SessionEnd end'; do
+  set -- $spec
+  grep -q "\"$1\"" "$CLAUDE_SETTINGS" || fail "(x) settings declares $1"
+  grep -qF "agent-hook\\\" claude $2" "$CLAUDE_SETTINGS" || fail "(x) settings maps $1 to $2"
+done
+ok '(x) settings declares every mapped event'
+grep -qF '${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}' "$CLAUDE_SETTINGS" \
+  || fail '(x) settings resolves the plugin root'
+ok '(x) settings resolves the plugin root'
+! grep -q 'bin/agent-state' "$CLAUDE_SETTINGS" || fail '(x) settings never calls agent-state directly'
+ok '(x) settings never calls agent-state directly'
+
+run_state "$CLAUDE_PANE" clear
+tmux_cmd kill-pane -t "$CLAUDE_PANE" 2>/dev/null || true
+
+# (y) Codex CLI hook mapping and shipped hook file.
+CODEX_PANE=$(new_pane codex-hook)
+CODEX_PAYLOAD='{"session_id":"s1","transcript_path":"/tmp/t.jsonl","cwd":"/tmp","hook_event_name":"Stop","model":"gpt-5","permission_mode":"default"}'
+for spec in 'SessionStart session idle' 'UserPromptSubmit prompt working' \
+  'PermissionRequest permission blocked' 'PostToolUse activity working' 'Stop stop done'; do
+  set -- $spec
+  out=$(hook "$CODEX_PANE" codex "$2" "$CODEX_PAYLOAD")
+  assert_eq 0 "$?" "(y) $1 exits 0"
+  assert_eq '' "$out" "(y) $1 prints nothing"
+  assert_eq codex "$(pane_option "$CODEX_PANE" '#{@ap_agent}')" "(y) $1 stores codex"
+  assert_eq "$3" "$(pane_option "$CODEX_PANE" '#{@ap_state}')" "(y) $1 maps to $3"
+done
+hook "$CODEX_PANE" codex prompt "$CODEX_PAYLOAD" >/dev/null
+hook "$CODEX_PANE" codex interrupt "$CODEX_PAYLOAD" >/dev/null
+assert_eq idle "$(pane_option "$CODEX_PANE" '#{@ap_state}')" '(y) Interrupt after working yields idle'
+hook "$CODEX_PANE" codex end "$CODEX_PAYLOAD" >/dev/null
+assert_eq '' "$(pane_option "$CODEX_PANE" '#{@ap_agent}')" '(y) SessionEnd removes agent'
+assert_eq '' "$(pane_option "$CODEX_PANE" '#{@ap_state}')" '(y) SessionEnd removes state'
+assert_eq '' "$(pane_option "$CODEX_PANE" '#{@ap_since}')" '(y) SessionEnd removes since'
+hook "$CODEX_PANE" codex stop '{"session_id":"s1","turn_id":"t1","hook_event_name":"Stop"}' >/dev/null
+assert_eq done "$(pane_option "$CODEX_PANE" '#{@ap_state}')" '(y) Stop with turn_id and no agent_id sets done'
+
+printf '%s' "$CODEX_PAYLOAD" | TMUX_AGENT_PICKER_ROOT=$ROOT TMUX_PANE=$CODEX_PANE \
+  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c '"$TMUX_AGENT_PICKER_ROOT/bin/agent-hook" codex prompt'
+assert_eq working "$(pane_option "$CODEX_PANE" '#{@ap_state}')" '(y) shipped command form runs'
+
+CODEX_HOOKS="$ROOT/agents/codex/hooks.json"
+[[ -f $CODEX_HOOKS ]] || fail '(y) agents/codex/hooks.json exists'
+json_valid "$CODEX_HOOKS" || fail '(y) agents/codex/hooks.json is valid JSON'
+ok '(y) agents/codex/hooks.json is valid JSON'
+if command -v jq >/dev/null 2>&1; then
+  assert_eq 'Interrupt PermissionRequest PostToolUse SessionEnd SessionStart Stop UserPromptSubmit' \
+    "$(jq -r '.hooks | keys | join(" ")' "$CODEX_HOOKS")" '(y) hook file declares exactly the mapped events'
+  assert_eq 3 "$(jq -r '.hooks.SessionEnd[0].hooks[0].timeout' "$CODEX_HOOKS")" \
+    '(y) SessionEnd uses the 3-second ceiling'
+  assert_eq 3 "$(jq -r '.hooks.Interrupt[0].hooks[0].timeout' "$CODEX_HOOKS")" \
+    '(y) Interrupt uses the 3-second ceiling'
+  assert_eq 0 \
+    "$(jq '[.hooks | to_entries[] | .key as $e | .value[] | .hooks[] | select($e != "SessionEnd" and $e != "Interrupt" and .timeout != 5)] | length' "$CODEX_HOOKS")" \
+    '(y) other handlers use a 5-second timeout'
+fi
+for spec in 'SessionStart session' 'UserPromptSubmit prompt' 'PermissionRequest permission' \
+  'PostToolUse activity' 'Stop stop' 'Interrupt interrupt' 'SessionEnd end'; do
+  set -- $spec
+  grep -q "\"$1\"" "$CODEX_HOOKS" || fail "(y) hooks declare $1"
+  grep -qF "agent-hook\\\" codex $2" "$CODEX_HOOKS" || fail "(y) hooks map $1 to $2"
+done
+ok '(y) hooks declare every mapped event'
+! grep -q 'bin/agent-state' "$CODEX_HOOKS" || fail '(y) hooks never call agent-state directly'
+ok '(y) hooks never call agent-state directly'
+
+run_state "$CODEX_PANE" clear
+tmux_cmd kill-pane -t "$CODEX_PANE" 2>/dev/null || true
+
+# (z) GitHub Copilot CLI hook mapping and shipped hook file.
+COPILOT_PANE=$(new_pane copilot-hook)
+COPILOT_PAYLOAD='{"sessionId":"s1","timestamp":1762500000000,"cwd":"/tmp"}'
+COPILOT_STOP='{"sessionId":"s1","timestamp":1,"cwd":"/tmp","stopReason":"end_turn","stop_hook_active":false,"transcriptPath":"/tmp/t"}'
+COPILOT_END='{"sessionId":"s1","timestamp":1,"cwd":"/tmp","reason":"complete"}'
+for spec in 'sessionStart session idle' 'userPromptSubmitted prompt working' \
+  'permissionRequest permission blocked' 'postToolUse activity working' \
+  'postToolUseFailure activity working' 'agentStop stop done' 'errorOccurred stop done'; do
+  set -- $spec
+  payload=$COPILOT_PAYLOAD
+  case "$1" in
+    agentStop) payload=$COPILOT_STOP ;;
+  esac
+  out=$(hook "$COPILOT_PANE" copilot "$2" "$payload")
+  assert_eq 0 "$?" "(z) $1 exits 0"
+  assert_eq '' "$out" "(z) $1 prints nothing"
+  assert_eq copilot "$(pane_option "$COPILOT_PANE" '#{@ap_agent}')" "(z) $1 stores copilot"
+  assert_eq "$3" "$(pane_option "$COPILOT_PANE" '#{@ap_state}')" "(z) $1 maps to $3"
+done
+for reason in user_exit abort; do
+  hook "$COPILOT_PANE" copilot prompt "$COPILOT_PAYLOAD" >/dev/null
+  hook "$COPILOT_PANE" copilot end "{\"sessionId\":\"s1\",\"timestamp\":1,\"cwd\":\"/tmp\",\"reason\":\"$reason\"}" >/dev/null
+  assert_eq '' "$(pane_option "$COPILOT_PANE" '#{@ap_state}')" "(z) sessionEnd $reason clears state"
+done
+hook "$COPILOT_PANE" copilot permission "$COPILOT_PAYLOAD" >/dev/null
+hook "$COPILOT_PANE" copilot stop "$COPILOT_STOP" >/dev/null
+assert_eq done "$(pane_option "$COPILOT_PANE" '#{@ap_state}')" '(z) agentStop after blocked yields done'
+
+printf '%s' "$COPILOT_PAYLOAD" | TMUX_AGENT_PICKER_ROOT=$ROOT TMUX_PANE=$COPILOT_PANE \
+  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c '"$TMUX_AGENT_PICKER_ROOT/bin/agent-hook" copilot prompt'
+assert_eq working "$(pane_option "$COPILOT_PANE" '#{@ap_state}')" '(z) shipped command form runs'
+
+COPILOT_HOOKS="$ROOT/agents/copilot/hooks.json"
+[[ -f $COPILOT_HOOKS ]] || fail '(z) agents/copilot/hooks.json exists'
+json_valid "$COPILOT_HOOKS" || fail '(z) agents/copilot/hooks.json is valid JSON'
+ok '(z) agents/copilot/hooks.json is valid JSON'
+if command -v jq >/dev/null 2>&1; then
+  assert_eq 1 "$(jq -r '.version' "$COPILOT_HOOKS")" '(z) hook file declares version 1'
+  assert_eq 'agentStop errorOccurred permissionRequest postToolUse postToolUseFailure sessionEnd sessionStart userPromptSubmitted' \
+    "$(jq -r '.hooks | keys | join(" ")' "$COPILOT_HOOKS")" '(z) hook file declares exactly the mapped events'
+  assert_eq 3 "$(jq -r '.hooks.sessionEnd[0].timeoutSec' "$COPILOT_HOOKS")" \
+    '(z) sessionEnd uses a 3-second timeout'
+  assert_eq 0 \
+    "$(jq '[.hooks | to_entries[] | .key as $e | .value[] | select($e != "sessionEnd" and .timeoutSec != 5)] | length' "$COPILOT_HOOKS")" \
+    '(z) other handlers use a 5-second timeout'
+fi
+for spec in 'sessionStart session' 'userPromptSubmitted prompt' 'permissionRequest permission' \
+  'postToolUse activity' 'postToolUseFailure activity' 'agentStop stop' 'errorOccurred stop' \
+  'sessionEnd end'; do
+  set -- $spec
+  grep -q "\"$1\"" "$COPILOT_HOOKS" || fail "(z) hooks declare $1"
+  grep -qF "agent-hook\\\" copilot $2" "$COPILOT_HOOKS" || fail "(z) hooks map $1 to $2"
+done
+ok '(z) hooks declare every mapped event'
+! grep -q 'bin/agent-state' "$COPILOT_HOOKS" || fail '(z) hooks never call agent-state directly'
+ok '(z) hooks never call agent-state directly'
+
+run_state "$COPILOT_PANE" clear
+tmux_cmd kill-pane -t "$COPILOT_PANE" 2>/dev/null || true
+
+# (ag) agy plugin mapping, conversation gate, and manifests.
+AGY_RUNTIME="$TMP_ROOT/agy-runtime"
+mkdir -p "$AGY_RUNTIME"
+agy_hook() {  # pane payload verb
+  printf '%s' "$2" | XDG_RUNTIME_DIR="$AGY_RUNTIME" TMUX_PANE=$1 \
+    TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" "$ROOT/agents/agy/hook" "$3"
+}
+AGY_PANE=$(new_pane agy-hook)
+AGY_PAYLOAD='{"conversationId":"root-1"}'
+out=$(agy_hook "$AGY_PANE" "$AGY_PAYLOAD" session)
+assert_eq 0 "$?" '(ag) session exits 0'
+assert_eq '{}' "$out" '(ag) session prints exactly {}'
+assert_eq agy "$(pane_option "$AGY_PANE" '#{@ap_agent}')" '(ag) session stores agy'
+assert_eq idle "$(pane_option "$AGY_PANE" '#{@ap_state}')" '(ag) session maps to idle'
+for spec in 'prompt working' 'permission blocked' 'activity working'; do
+  set -- $spec
+  out=$(agy_hook "$AGY_PANE" "$AGY_PAYLOAD" "$1")
+  assert_eq 0 "$?" "(ag) $1 exits 0"
+  assert_eq '{}' "$out" "(ag) $1 prints exactly {}"
+  assert_eq "$2" "$(pane_option "$AGY_PANE" '#{@ap_state}')" "(ag) $1 maps to $2"
+done
+out=$(agy_hook "$AGY_PANE" '{"conversationId":"root-1","terminationReason":"NO_TOOL_CALL"}' stop)
+assert_eq '{}' "$out" '(ag) stop prints exactly {}'
+assert_eq done "$(pane_option "$AGY_PANE" '#{@ap_state}')" '(ag) normal stop maps to done'
+agy_hook "$AGY_PANE" '{"conversationId":"root-1","terminationReason":"USER_CANCELED"}' stop >/dev/null
+assert_eq idle "$(pane_option "$AGY_PANE" '#{@ap_state}')" '(ag) user cancel maps to idle'
+
+agy_hook "$AGY_PANE" "$AGY_PAYLOAD" prompt >/dev/null
+agy_hook "$AGY_PANE" '{"conversationId":"sub-9","terminationReason":"NO_TOOL_CALL"}' stop >/dev/null
+assert_eq working "$(pane_option "$AGY_PANE" '#{@ap_state}')" '(ag) subagent stop is ignored'
+AGY_FRESH_PANE=$(new_pane agy-fresh)
+agy_hook "$AGY_FRESH_PANE" '{"terminationReason":"NO_TOOL_CALL"}' stop >/dev/null
+assert_eq done "$(pane_option "$AGY_FRESH_PANE" '#{@ap_state}')" '(ag) stop without an id applies when none is stored'
+
+for verb in session prompt permission activity stop interrupt end; do
+  out=$(agy_hook "$AGY_FRESH_PANE" 'not json' "$verb")
+  assert_eq 0 "$?" "(ag) $verb exits 0 on unparsable stdin"
+  assert_eq '{}' "$out" "(ag) $verb prints exactly {} on unparsable stdin"
+done
+out=$(printf '{}' | XDG_RUNTIME_DIR="$AGY_RUNTIME" TMUX_PANE=$AGY_PANE \
+  TMUX_AGENT_PICKER_BIN=/nonexistent "$ROOT/agents/agy/hook" session)
+assert_eq 0 "$?" '(ag) missing agent-state exits 0'
+assert_eq '{}' "$out" '(ag) missing agent-state prints exactly {}'
+
+AGY_PLUGIN="$ROOT/agents/agy/plugin.json"
+AGY_HOOKS="$ROOT/agents/agy/hooks.json"
+[[ -f $AGY_PLUGIN ]] || fail '(ag) agents/agy/plugin.json exists'
+[[ -f $AGY_HOOKS ]] || fail '(ag) agents/agy/hooks.json exists'
+json_valid "$AGY_PLUGIN" || fail '(ag) agents/agy/plugin.json is valid JSON'
+json_valid "$AGY_HOOKS" || fail '(ag) agents/agy/hooks.json is valid JSON'
+ok '(ag) plugin manifests are valid JSON'
+if command -v jq >/dev/null 2>&1; then
+  assert_eq 'PostToolUse PreInvocation PreToolUse SessionStart Stop' \
+    "$(jq -r '.["tmux-agent-picker"] | keys | join(" ")' "$AGY_HOOKS")" \
+    '(ag) hooks declare exactly the mapped events'
+fi
+for spec in 'SessionStart session' 'PreInvocation prompt' 'PreToolUse permission' \
+  'PostToolUse activity' 'Stop stop'; do
+  set -- $spec
+  grep -q "\"$1\"" "$AGY_HOOKS" || fail "(ag) hooks declare $1"
+  grep -qF '${PLUGIN_ROOT}/hook '"$2" "$AGY_HOOKS" || fail "(ag) hooks map $1 to $2"
+done
+ok '(ag) hooks declare every mapped event'
+if command -v agy >/dev/null 2>&1; then
+  AGY_VALIDATE=$(HOME="$TMP_ROOT/agy-home" agy plugin validate "$ROOT/agents/agy" 2>&1 || true)
+  [[ $AGY_VALIDATE != *[Ee]rror* ]] || {
+    printf '%s\n' "$AGY_VALIDATE" >&2
+    fail '(ag) agy plugin validate reports no errors'
+  }
+  ok '(ag) agy plugin validate reports no errors'
+else
+  ok '(ag) agy not installed, skipping plugin validation'
+fi
+
+run_state "$AGY_PANE" clear
+run_state "$AGY_FRESH_PANE" clear
+tmux_cmd kill-pane -t "$AGY_PANE" 2>/dev/null || true
+tmux_cmd kill-pane -t "$AGY_FRESH_PANE" 2>/dev/null || true
 
 # The empty list keeps the new-session key reachable.
 for pane in "${ORDER_PANES[@]}"; do

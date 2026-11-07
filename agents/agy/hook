@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+set -u
+
+# agy hook shim: gate events by conversationId, then delegate to the shared
+# wrapper. agy requires every hook to print JSON on stdout, so this script always
+# prints exactly `{}` and exits 0, even when it rejects the event.
+root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+verb=${1:-}
+pane=${TMUX_PANE:-}
+
+if [[ -z $pane ]]; then
+  printf '{}\n'
+  exit 0
+fi
+
+payload=''
+if [[ ! -t 0 ]]; then
+  payload=$(cat 2>/dev/null || true)
+fi
+conversation=$(printf '%s' "$payload" |
+  sed -n 's/.*"conversationId"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' |
+  head -n 1)
+
+runtime=${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmux-agent-picker
+if ! mkdir -p "$runtime" 2>/dev/null; then
+  runtime="${HOME:-}/.cache/tmux-agent-picker"
+  mkdir -p "$runtime" 2>/dev/null || runtime=''
+fi
+if [[ -n $runtime ]]; then
+  chmod 700 "$runtime" 2>/dev/null || true
+fi
+
+conv_file=''
+[[ -n $runtime ]] && conv_file="$runtime/agy-$(id -u)-${pane#%}.conv"
+
+allowed=1
+if [[ $verb == session ]]; then
+  [[ -n $conv_file ]] && printf '%s' "$conversation" >"$conv_file" 2>/dev/null
+else
+  stored=''
+  [[ -n $conv_file && -r $conv_file ]] && stored=$(cat "$conv_file" 2>/dev/null || true)
+  if [[ -n $conversation ]]; then
+    if [[ -n $stored && $stored != "$conversation" ]]; then
+      allowed=0
+    elif [[ -z $stored && -n $conv_file ]]; then
+      printf '%s' "$conversation" >"$conv_file" 2>/dev/null || true
+    fi
+  fi
+fi
+
+if [[ $allowed == 1 ]]; then
+  printf '%s' "$payload" | "$root/bin/agent-hook" agy "$verb" >/dev/null 2>&1 || true
+fi
+
+printf '{}\n'
+exit 0

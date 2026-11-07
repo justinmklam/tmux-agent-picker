@@ -20,7 +20,7 @@ There is no daemon and no screen scraping. Agents write state into pane-scoped t
 - `bin/agent-state` is the writer. Agents call it on lifecycle events, and the focus hooks call it when you look at a pane.
 - `bin/agent-pick` is the reader and modal picker. It lists agent panes, sorts them, colours them, and runs fzf.
 - `bin/agent-new` is the zoxide directory picker reachable with `n` from the agent picker.
-- `pi/agent-state.ts` is the reference lifecycle integration. It reports only for the root pi TUI session, serializes calls, and resolves the state script relative to the extension checkout.
+- `agents/pi/agent-state.ts` is the reference lifecycle integration. It reports only for the root pi TUI session, serializes calls, and resolves the state script relative to the extension checkout.
 - `tmux-agent-picker.tmux` is the TPM entrypoint. It exports `TMUX_AGENT_PICKER_ROOT` and sources the tmux configuration.
 
 The binding and hooks expand `$TMUX_AGENT_PICKER_ROOT` when the entrypoint is sourced, so configuration changes need a tmux reload. Scripts under `bin/` do not: every invocation runs the script fresh.
@@ -30,9 +30,14 @@ The binding and hooks expand `$TMUX_AGENT_PICKER_ROOT` when the entrypoint is so
 | Path | Purpose |
 | --- | --- |
 | `bin/agent-state` | Best-effort pane state writer (`set`, `seen`, `clear`). |
+| `bin/agent-hook` | Agent hook wrapper mapping `<agent> <verb>` payloads to `bin/agent-state` writes. |
 | `bin/agent-pick` | Agent listing and modal fzf picker. |
 | `bin/agent-new` | zoxide directory picker and switch-or-create session logic. |
-| `pi/agent-state.ts` | pi lifecycle extension for the root TUI session. |
+| `agents/pi/agent-state.ts` | pi lifecycle extension for the root TUI session. |
+| `agents/claude/settings.hooks.json` | Mergeable Claude Code hook block. |
+| `agents/codex/hooks.json` | Codex CLI user-level hook file. |
+| `agents/copilot/hooks.json` | GitHub Copilot CLI user-level hook file. |
+| `agents/agy/` | agy plugin manifest, hook mapping, and conversation-gated hook shim. |
 | `tmux-agent-picker.tmux` | TPM plugin entrypoint. |
 | `tmux/tmux-agent-picker.tmux.conf` | tmux binding and focus hooks. |
 | `theme/catppuccin-mocha.tmux.conf` | Active theme values consumed by tmux and both fzf pickers. |
@@ -77,6 +82,8 @@ The command always exits 0, prints nothing, and does nothing when the state is r
 `set` only accepts `working`, `blocked`, `done`, and `idle`; anything else, including an invalid agent name, is ignored. `seen` changes only `done` to `idle` and preserves `@ap_since`, so a finished agent keeps its original position among idle agents.
 
 The tmux focus hooks call `bin/agent-state seen` on `pane-focus-in`, `after-select-pane`, `after-select-window`, and `client-session-changed`. They use hook index `77` so re-sourcing replaces the hooks instead of stacking duplicates. A process must report `done` itself; do not report `idle` immediately after `done`, or the pane will never show the attention state.
+
+Shell integrations call `bin/agent-hook <agent> <verb>` instead of calling `bin/agent-state` directly. The wrapper maps `session`, `prompt`, `permission`, `activity`, `stop`, `interrupt`, and `end` onto the state commands, ignores payloads carrying a subagent id (`agent_id` or `agentId`), skips `activity` when the pane is already `done` or `idle`, and holds a per-pane lock under `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmux-agent-picker` — falling back to `$HOME/.cache/tmux-agent-picker` when that directory is not writable — so lifecycle events cannot land out of order. It always exits 0 and prints nothing.
 
 Which lifecycle events an integration should report is documented in [AGENT_SUPPORT.md](AGENT_SUPPORT.md#lifecycle-events).
 
@@ -178,7 +185,7 @@ For behaviour changes, add or update a focused test in `tests/run.sh` first. The
 | `bin/agent-pick`, `bin/agent-new`, `bin/agent-state` | Nothing. Each invocation runs the script fresh, so reopening the popup picks up the change. |
 | `tmux/tmux-agent-picker.tmux.conf`, `theme/*.conf` | `tmux source-file ~/.tmux.conf`, or source the plugin entrypoint directly. |
 | `tmux-agent-picker.tmux` | `tmux source-file ~/.tmux.conf`. It re-exports `TMUX_AGENT_PICKER_ROOT`, which the binding and hooks capture at source time. |
-| `pi/agent-state.ts` | `/reload` in pi. |
+| `agents/pi/agent-state.ts` | `/reload` in pi. |
 | Anything | `make test`. |
 
 ### Verify the tmux integration
@@ -201,7 +208,7 @@ checkout=~/Documents/tmux-agent-picker   # replace with your checkout
 plugin_dir=$(tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH | cut -d= -f2-)
 mv "$plugin_dir/tmux-agent-picker" "$plugin_dir/tmux-agent-picker.bak" 2>/dev/null
 ln -s "$checkout" "$plugin_dir/tmux-agent-picker"
-ln -sf "$checkout/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
+ln -sf "$checkout/agents/pi/agent-state.ts" ~/.pi/agent/extensions/agent-state.ts
 ```
 
 Keep the `set -g @plugin` line and TPM `run` line in `~/.tmux.conf`, then reload tmux and run `/reload` in pi. TPM reports the plugin as already installed and never clones over your checkout.
@@ -231,7 +238,7 @@ Then reload tmux and create the pi extension symlink from that checkout:
 
 ```sh
 tmux source-file ~/.tmux.conf
-ln -s ~/.config/tmux-agent-picker/pi/agent-state.ts ~/.pi/agent/extensions/agent-state.ts
+ln -s ~/.config/tmux-agent-picker/agents/pi/agent-state.ts ~/.pi/agent/extensions/agent-state.ts
 ```
 
 Run `/reload` in pi. To remove a direct checkout, remove its `set-environment` and `source-file` lines, then run the cleanup commands in [Uninstall details](#uninstall-details) without removing an `@plugin` line.
