@@ -66,6 +66,26 @@ wait_for_normal() {
 
 tmux_cmd() { tmux -L "$SERVER" "$@"; }
 
+# fzf draws the focused list line with a bold pointer and the `bg+` colour, so an
+# attribute-preserving capture can report the row under the cursor.
+picker_rows() {
+  local pane=$1
+  tmux_cmd capture-pane -e -p -t "$pane" 2>/dev/null |
+    sed -E $'s/\033\\[[0-9;]*m//g' |
+    sed -E 's/^(▌| )+//; s/[│╭╮╰╯].*$//; s/[[:space:]]+$//' |
+    grep -E '^(blocked|done|idle|working|session)([[:space:]]|$)' || true
+}
+
+picker_focused_row() {
+  local pane=$1
+  tmux_cmd capture-pane -e -p -t "$pane" 2>/dev/null |
+    grep -aF $'\033[1m' |
+    grep -aF '▌' |
+    head -n 1 |
+    sed -E $'s/\033\\[[0-9;]*m//g' |
+    sed -E 's/^(▌| )+//; s/[│╭╮╰╯].*$//; s/[[:space:]]+$//' || true
+}
+
 # A dedicated server started from an explicit command gives every test pane a stable shell context.
 tmux -L "$SERVER" -f /dev/null new-session -d -s ap-test -c "$TMP_ROOT" 'exec sleep 3600'
 SERVER_INFO=$(tmux_cmd display-message -p '#{socket_path},#{pid},0')
@@ -394,6 +414,23 @@ tmux_cmd send-keys -t "$PICKER" Escape
 wait_for_normal "$PICKER" || fail '(r) Esc did not leave filter mode'
 tmux_cmd send-keys -t "$PICKER" Escape
 tmux_cmd kill-session -t tira
+
+# Typing a query restarts the cursor at the top of the list instead of keeping
+# the row that happened to be focused before filtering.
+PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-picker-cursor "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+wait_for_normal "$PICKER" || fail '(u) cursor picker did not start'
+tmux_cmd send-keys -t "$PICKER" j
+sleep 0.2
+tmux_cmd send-keys -t "$PICKER" j
+sleep 0.3
+assert_eq "$(picker_rows "$PICKER" | sed -n 3p)" "$(picker_focused_row "$PICKER")" '(u) j moves the cursor down the list'
+tmux_cmd send-keys -t "$PICKER" /
+wait_for "$PICKER" 'type to filter' || fail '(u) filter mode did not open'
+tmux_cmd send-keys -t "$PICKER" p
+sleep 0.3
+assert_eq "$(picker_rows "$PICKER" | head -n 1)" "$(picker_focused_row "$PICKER")" '(u) typing resets the cursor to the first row'
+tmux_cmd send-keys -t "$PICKER" Escape
+tmux_cmd send-keys -t "$PICKER" Escape
 
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-q "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-q '#{pane_id}')

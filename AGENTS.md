@@ -73,6 +73,7 @@ The test harness must use a private tmux server, `TMUX_TMPDIR`, and `_ZO_DATA_DI
 - Every client switch must target the client passed to the popup with `switch-client -c`.
 - Keep user paths out of fzf action text. Use fzf placeholders and its quoting for `{q}` and `{}`.
 - Preserve the modal behavior: `n` opens the directory picker, `/` enters filter mode, and Esc first leaves filter mode and then closes or returns to the previous picker.
+- Changing the query resets the cursor to the first row (`change:first`) instead of keeping the previously focused row.
 - `x` kills the session owning the pane under the cursor. Require a `y`/`Y` answer, refuse the session running the picker, and reload with `--rows` instead of leaving the picker.
 - Use `exec fzf` and process substitution so picker transitions do not leave waiting shells behind.
 

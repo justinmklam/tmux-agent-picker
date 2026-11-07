@@ -238,6 +238,7 @@ interactive() {
     --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows)" \
     --bind "/:show-input+unbind(n,x,/,j,k)+change-footer($FILTER_FOOTER)" \
     --bind 'j:down,k:up' \
+    --bind 'change:first' \
     --bind 'q:abort' \
     --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind(n,x,/,j,k)+change-footer($footer)'; else echo abort; fi" \
     --bind "enter:become($root_q/bin/agent-pick --go {1} --client $client_q)" \

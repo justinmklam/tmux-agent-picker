@@ -86,6 +86,7 @@ Which lifecycle events an integration should report is documented in [AGENT_SUPP
 - User paths stay out of fzf action text; the picker uses fzf placeholders and its quoting for `{q}` and `{}`.
 - Picker transitions use `exec fzf` and process substitution so no waiting shells are left behind.
 - Agent order is state tier, then newest `@ap_since`.
+- A changed query restarts the cursor at the first row (`change:first`) so filtering never keeps a stale cursor position.
 - The list reloads after an action without closing the picker.
 
 Keys:
@@ -96,7 +97,7 @@ Keys:
 | `j` / `k` | Move the cursor down / up. |
 | `n` | Open the directory picker and switch to or create that session. |
 | `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. The session running the picker is refused so the popup cannot destroy itself. |
-| `/` | Enter filter mode; `n` and `x` type normally there. |
+| `/` | Enter filter mode; `n` and `x` type normally there. Typing restarts the cursor at the first row. |
 | `q` / `Esc` | Close the picker. `Esc` first clears the query and leaves filter mode. |
 
 Killing a session terminates every window and pane in it, including unsaved work. The list reloads afterwards and keeps the picker open.
