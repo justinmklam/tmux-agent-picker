@@ -11,11 +11,25 @@ theme_option() {
   "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
 }
 
+DEFAULT_AGENT_NAMES='claude codex copilot agy gemini aider opencode goose crush cursor-agent'
+
+# Detection state, filled once per listing so no per-pane process is spawned.
+AGENT_NAMES=''
+AGENT_MATCH=''
+DETECTED_AGENT=''
+PROC_TABLE_LOADED=0
+PROC_PIDS=''
+PROC_PARENT=()
+PROC_COMMAND=()
+PROC_PARENTS=''
+NOW=0
+
 age_for() {
-  local since=$1 now age
-  now=$(date +%s)
-  [[ $since =~ ^[0-9]+$ ]] || since=$now
-  age=$((now - since))
+  local since=$1 age
+  case $since in
+    '' | *[!0-9]*) since=$NOW ;;
+  esac
+  age=$((NOW - since))
   (( age < 0 )) && age=0
   if (( age < 60 )); then
     printf '%ss' "$age"
@@ -28,19 +42,102 @@ age_for() {
   fi
 }
 
-session_has_visible_agent() {
-  local session=$1 state command
-  while IFS=$'\x1f' read -r state command; do
-    case "$state:$command" in
-      blocked:*|done:*|idle:*|working:*)
-        case "$command" in
-          zsh|bash|fish|sh) continue ;;
-          *) return 0 ;;
-        esac
+# The configured name list. `off` disables detection and process inspection;
+# `on` and an unset option select the built-in list.
+agent_names() {
+  local names
+  names=$(theme_option @ap_detect_agents)
+  case $names in
+    [Oo][Ff][Ff]) return 0 ;;
+    '' | [Oo][Nn]) printf '%s' "$DEFAULT_AGENT_NAMES" ;;
+    *) printf '%s' "$names" ;;
+  esac
+}
+
+# Sets AGENT_MATCH to the first token that names a configured agent. Tokens are
+# split on whitespace and "/"; a trailing interpreter extension is ignored.
+match_agent_token() {
+  local text=${1:-} token base
+  local -a tokens
+  AGENT_MATCH=''
+  [[ -n $text && -n $AGENT_NAMES ]] || return 1
+  IFS=$' \t\n/' read -ra tokens <<< "$text"
+  for token in "${tokens[@]}"; do
+    base=${token%.js}
+    base=${base%.mjs}
+    base=${base%.cjs}
+    base=${base%.py}
+    base=${base%.exe}
+    case $base in
+      '' | *[!a-z0-9_-]*) continue ;;
+    esac
+    (( ${#base} > 16 )) && continue
+    case " $AGENT_NAMES " in
+      *" $base "*)
+        AGENT_MATCH=$base
+        return 0
         ;;
     esac
-  done < <($TMUX_BIN list-panes -s -t "$session" -F $'#{@ap_state}\x1f#{pane_current_command}' 2>/dev/null || true)
+  done
   return 1
+}
+
+# Take one process snapshot per listing. Detection then costs no process spawns,
+# which matters because a listing walks every pane. Indexed arrays keyed by pid
+# keep this compatible with the bash 3.2 that macOS ships.
+load_process_table() {
+  local pid ppid rest
+  (( PROC_TABLE_LOADED )) && return 0
+  PROC_TABLE_LOADED=1
+  while read -r pid ppid rest; do
+    case $pid$ppid in
+      '' | *[!0-9]*) continue ;;
+    esac
+    PROC_PIDS+=" $pid"
+    PROC_PARENT[$pid]=$ppid
+    PROC_COMMAND[$pid]=$rest
+    PROC_PARENTS+=" $ppid"
+  done < <(ps -A -o pid=,ppid=,command= 2>/dev/null || true)
+  [[ -n $PROC_PIDS ]]
+}
+
+# Look for an agent name in this process and, up to two levels below the pane,
+# in its children. Sets AGENT_MATCH. Shell wrappers and shims hide the agent
+# name this way.
+process_has_agent() {
+  local pid=$1 depth=$2 child
+  match_agent_token "${PROC_COMMAND[$pid]:-}" && return 0
+  (( depth >= 2 )) && return 1
+  # Skipping childless processes keeps most panes off the full scan below.
+  case " $PROC_PARENTS " in
+    *" $pid "*) ;;
+    *) return 1 ;;
+  esac
+  for child in $PROC_PIDS; do
+    [[ ${PROC_PARENT[$child]:-} == "$pid" ]] || continue
+    process_has_agent "$child" $((depth + 1)) && return 0
+  done
+  return 1
+}
+
+# Best-effort detection for a pane with no reported state. Sets DETECTED_AGENT
+# and never fails the listing: a missing ps or an unreadable process simply
+# reports no match.
+detect_agent_for_pane() {
+  local pid=${1:-} command=${2:-}
+  DETECTED_AGENT=''
+  [[ -n $AGENT_NAMES ]] || return 1
+  if match_agent_token "${command:-}"; then
+    DETECTED_AGENT=$AGENT_MATCH
+    return 0
+  fi
+  [[ -n $pid ]] || return 1
+  case $pid in
+    *[!0-9]*) return 1 ;;
+  esac
+  load_process_table || return 1
+  process_has_agent "$pid" 0 || return 1
+  DETECTED_AGENT=$AGENT_MATCH
 }
 
 active_pane_for_session() {
@@ -50,12 +147,26 @@ active_pane_for_session() {
 }
 
 list_agents() {
-  local pane state since agent session window pane_index command title tier age display
-  local session_id session_name session_pane
-  local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}'
+  local pane state since agent session session_id window pane_index command title pid
+  local tier age display
+  local session_pane sessions_with_agents=''
+  local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}'
   {
-    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title; do
-      [[ -n $pane && -n $state ]] || continue
+    AGENT_NAMES=$(agent_names)
+    NOW=$(date +%s)
+    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid; do
+      [[ -n $pane ]] || continue
+      # A pane without state may still be an agent: detected agents cannot
+      # report working, blocked, or done, so they enter the idle tier.
+      if [[ -z $state ]]; then
+        detect_agent_for_pane "$pid" "$command"
+        if [[ -n $DETECTED_AGENT ]]; then
+          display="idle"$'\t'"$DETECTED_AGENT"$'\t'"$session:$window.$pane_index"$'\t'"-"$'\t'"$title"
+          printf '3\t0\t%s\t%s\t%s\n' "$pane" "$pane" "$display"
+          sessions_with_agents+=" $session_id"
+          continue
+        fi
+      fi
       case "$command" in
         zsh|bash|fish|sh) continue ;;
       esac
@@ -69,11 +180,14 @@ list_agents() {
       age=$(age_for "$since")
       display="$state"$'\t'"$agent"$'\t'"$session:$window.$pane_index"$'\t'"$age"$'\t'"$title"
       printf '%s\t%s\t%s\t%s\t%s\n' "$tier" "${since:-0}" "$pane" "$pane" "$display"
+      sessions_with_agents+=" $session_id"
     done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
 
     while IFS=$'\x1f' read -r session_id session_name; do
       [[ -n $session_id && -n $session_name ]] || continue
-      session_has_visible_agent "$session_id" && continue
+      case " $sessions_with_agents " in
+        *" $session_id "*) continue ;;
+      esac
       session_pane=$(active_pane_for_session "$session_id")
       [[ -n $session_pane ]] || continue
       printf '4\t0\t%s\t%s\tsession %s\n' "$session_name" "$session_pane" "$session_name"

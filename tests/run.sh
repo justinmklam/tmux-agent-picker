@@ -93,7 +93,7 @@ export TMUX=$SERVER_INFO
 
 new_pane() {
   local name=$1 command=${2:-'exec sleep 3600'}
-  tmux_cmd new-window -d -n "$name" "$command"
+  tmux_cmd new-window -d -t ap-test: -n "$name" "$command"
   tmux_cmd display-message -p -t "ap-test:$name" '#{pane_id}'
 }
 
@@ -103,6 +103,36 @@ pane_option() {
 
 run_state() {
   TMUX_PANE=$1 "$ROOT/bin/agent-state" "${@:2}"
+}
+
+# Create an executable symlink to sleep with a chosen process name so tests can
+# stand in for a native agent binary without installing one.
+agent_link() {
+  local name=$1
+  ln -sf "$(command -v sleep)" "$TMP_ROOT/$name"
+  printf '%s' "$TMP_ROOT/$name"
+}
+
+wait_for_command() {
+  local pane=$1 want=$2 i
+  for i in $(seq 1 100); do
+    [[ $(pane_option "$pane" '#{pane_current_command}') == "$want" ]] && return 0
+    sleep 0.05
+  done
+  printf 'timed out waiting for command %q in pane %s, got %q\n' \
+    "$want" "$pane" "$(pane_option "$pane" '#{pane_current_command}')" >&2
+  return 1
+}
+
+wait_for_child() {
+  local pane=$1 i pid
+  for i in $(seq 1 100); do
+    pid=$(pane_option "$pane" '#{pane_pid}')
+    [[ -n $(pgrep -P "$pid" 2>/dev/null || true) ]] && return 0
+    sleep 0.05
+  done
+  printf 'timed out waiting for a child process in pane %s\n' "$pane" >&2
+  return 1
 }
 
 # (a) set writes valid state and list is agent-name agnostic.
@@ -493,6 +523,123 @@ for i in $(seq 1 100); do
 done
 assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(r) Enter closes after opening a directory'
 assert_eq "$ENTER_DIR" "$(tmux_cmd display-message -p -t enter-dir '#{session_path}')" '(r) Enter creates the selected session'
+
+# (v) agents without lifecycle hooks are detected from their process.
+CLAUDE_LINK=$(agent_link claude)
+CODEX_RUN="$TMP_ROOT/@openai/codex/bin/run.js"
+mkdir -p "$(dirname "$CODEX_RUN")"
+printf 'setTimeout(function () {}, 60000)\n' > "$CODEX_RUN"
+
+# A native binary reports its own name, so a symlink is enough to prove it.
+CLAUDE_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s detect-claude -c "$TMP_ROOT" "exec $CLAUDE_LINK 100")
+wait_for_command "$CLAUDE_PANE" claude || fail '(v) claude fixture did not start'
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle claude -' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$CLAUDE_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v) detects a native agent binary'
+assert_eq 0 "$(printf '%s\n' "$DETECTED" | grep -c 'session detect-claude' || true)" \
+  '(v) detected agent suppresses the session row'
+assert_match $'\tidle {2}claude {2}detect-claude:[0-9]+\.[0-9]+ +-' \
+  "$(printf '%s\n' "$DETECTED" | grep -F "$CLAUDE_PANE" | head -n 1)" \
+  '(v) detected rows use the agent display format'
+
+# Node-based agents are pnpm shims: the name only appears in the command line.
+CODEX_PANE=$(new_pane codex-detect "exec node \"$CODEX_RUN\"")
+wait_for_command "$CODEX_PANE" node || fail '(v) codex fixture did not start'
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle codex -' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$CODEX_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v) detects an agent named in the command line'
+
+# A wrapper shell hides the agent in a child process.
+CODEX_CHILD_PANE=$(new_pane codex-child "exec sh -c 'node \"$CODEX_RUN\" & wait'")
+wait_for_command "$CODEX_CHILD_PANE" sh || fail '(v) codex child fixture did not start'
+wait_for_child "$CODEX_CHILD_PANE" || fail '(v) codex child process did not start'
+CODEX_WRAPPER="$TMP_ROOT/run-agent"
+printf '#!/bin/sh\nnode "%s" & wait\n' "$CODEX_RUN" > "$CODEX_WRAPPER"
+chmod +x "$CODEX_WRAPPER"
+CODEX_DEPTH_PANE=$(new_pane codex-depth "exec $CODEX_WRAPPER")
+# The wrapper is a shell script, so the pane command is the interpreter.
+wait_for_command "$CODEX_DEPTH_PANE" sh || fail '(v) codex depth fixture did not start'
+wait_for_child "$CODEX_DEPTH_PANE" || fail '(v) codex depth child process did not start'
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle codex -' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$CODEX_CHILD_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v) detects an agent inside a shell wrapper'
+assert_eq 'idle codex -' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$CODEX_DEPTH_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v) detects an agent in a child process'
+
+NODE_PANE=$(new_pane node-plain "exec node -e 'setTimeout(function () {}, 60000)'")
+wait_for_command "$NODE_PANE" node || fail '(v) plain node fixture did not start'
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq '' "$(printf '%s\n' "$DETECTED" | awk -v p="$NODE_PANE" '$1 == p')" \
+  '(v) ignores a plain node pane'
+
+# Explicit state always wins, including a stale value nobody cleared.
+run_state "$CLAUDE_PANE" set pi working
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 1 "$(printf '%s\n' "$DETECTED" | grep -c -F "$CLAUDE_PANE" || true)" \
+  '(v) lists a pane with explicit state once'
+assert_eq 'working pi' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$CLAUDE_PANE" '$1 == p { print $2, $3 }')" \
+  '(v) explicit state wins over detection'
+
+TMUX_PANE= "$ROOT/bin/agent-pick" --go "$CODEX_PANE"
+assert_eq 1 "$(pane_option "$CODEX_PANE" '#{pane_active}')" '(v) --go targets a detected pane'
+run_state "$CLAUDE_PANE" clear
+
+# (v5) @ap_detect_agents replaces the default name list.
+MYTOOL_LINK=$(agent_link mytool)
+tmux_cmd set-option -g @ap_detect_agents 'mytool'
+MYTOOL_PANE=$(new_pane mytool "exec $MYTOOL_LINK 100")
+wait_for_command "$MYTOOL_PANE" mytool || fail '(v5) mytool fixture did not start'
+OVERRIDE=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle mytool -' \
+  "$(printf '%s\n' "$OVERRIDE" | awk -v p="$MYTOOL_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v5) honours @ap_detect_agents'
+assert_eq '' "$(printf '%s\n' "$OVERRIDE" | awk -v p="$CLAUDE_PANE" '$1 == p && $2 != "session" { print $2 }')" \
+  '(v5) override replaces the default name list'
+assert_eq 1 "$(printf '%s\n' "$OVERRIDE" | grep -c 'session detect-claude' || true)" \
+  '(v5) an undetected agent pane falls back to its session row'
+tmux_cmd set-option -gu @ap_detect_agents
+
+# (v6) @ap_detect_agents 'off' disables detection and process inspection.
+PS_SHIM_DIR="$TMP_ROOT/ps-shim"
+PS_LOG="$TMP_ROOT/ps-calls.log"
+REAL_PS=$(command -v ps)
+mkdir -p "$PS_SHIM_DIR"
+printf '#!/bin/sh\nprintf x >> "%s"\nexec "%s" "$@"\n' "$PS_LOG" "$REAL_PS" > "$PS_SHIM_DIR/ps"
+chmod +x "$PS_SHIM_DIR/ps"
+: > "$PS_LOG"
+PATH="$PS_SHIM_DIR:$PATH" TMUX_PANE= "$ROOT/bin/agent-pick" --list >/dev/null
+assert_eq x "$(head -c 1 "$PS_LOG")" '(v6) inspects processes when detection is enabled'
+tmux_cmd set-option -g @ap_detect_agents 'off'
+: > "$PS_LOG"
+OFF_LIST=$(PATH="$PS_SHIM_DIR:$PATH" TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq '' "$(head -c 1 "$PS_LOG")" '(v6) off skips process inspection'
+assert_eq '' "$(printf '%s\n' "$OFF_LIST" | awk -v p="$CLAUDE_PANE" '$1 == p && $2 != "session" { print $2 }')" \
+  '(v6) off disables detection'
+assert_eq 1 "$(printf '%s\n' "$OFF_LIST" | grep -c 'session detect-claude' || true)" \
+  '(v6) off falls back to the session row'
+tmux_cmd set-option -gu @ap_detect_agents
+assert_eq 'idle claude -' \
+  "$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk -v p="$CLAUDE_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v6) detection returns after unsetting the option'
+
+# (v7) 'on' restores the default name list without unsetting the option.
+tmux_cmd set-option -g @ap_detect_agents 'on'
+: > "$PS_LOG"
+ON_LIST=$(PATH="$PS_SHIM_DIR:$PATH" TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq x "$(head -c 1 "$PS_LOG")" '(v7) on resumes process inspection'
+assert_eq 'idle claude -' \
+  "$(printf '%s\n' "$ON_LIST" | awk -v p="$CLAUDE_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v7) on restores the default name list'
+tmux_cmd set-option -gu @ap_detect_agents
+
+for pane in "$CLAUDE_PANE" "$CODEX_PANE" "$CODEX_CHILD_PANE" "$CODEX_DEPTH_PANE" "$NODE_PANE" "$MYTOOL_PANE"; do
+  tmux_cmd kill-pane -t "$pane" 2>/dev/null || true
+done
 
 # The empty list keeps the new-session key reachable.
 for pane in "${ORDER_PANES[@]}"; do

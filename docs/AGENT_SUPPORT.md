@@ -1,6 +1,6 @@
 # Agent support
 
-tmux-agent-picker works with any agent that can run a shell command on its lifecycle events. pi is supported out of the box; this page describes how to add another agent.
+tmux-agent-picker works with any agent that can run a shell command on its lifecycle events. pi is supported out of the box, agents without an integration are still detected from their process, and this page describes how to add lifecycle reporting for another agent.
 
 For state meanings and how the picker orders rows, see [State model](DEVELOPMENT.md#state-model).
 
@@ -60,7 +60,19 @@ This example does not yet verify whether `blocked` ends after approval or denial
 
 ## Agents without hooks
 
-A shell wrapper can report `working` when it starts and `clear` on exit. It cannot report `blocked` or `done`, so treat that wrapper as a fallback, not full support.
+The picker detects an agent process automatically. A pane with no reported state is scanned for a name from `@ap_detect_agents` in the foreground command, the pane's command line, and its child processes, so agents like `claude`, `codex`, and `copilot` appear as `idle` rows with an age of `-` even before you write any integration. See [Detected agents](DEVELOPMENT.md#detected-agents) for the match order, the default list, and the limits.
+
+Detection reads a process name, so it cannot report `working`, `blocked`, or `done`. For those states, keep the hook integration: it is what turns an `idle` row into an actionable one. When an integration reports state, that state replaces the detected row in the same pane. To list only panes that report state, set `@ap_detect_agents` to `off`; no process inspection runs in that mode. `on`, or no option at all, selects the built-in name list.
+
+If the agent's name never appears in its process tree — an obvious case is a command that is renamed at launch, or a launcher that keeps the real command line hidden — use a shell wrapper:
+
+```sh
+#!/bin/sh
+~/.tmux/plugins/tmux-agent-picker/bin/agent-state set myagent working
+exec /path/to/agent "$@"
+```
+
+A wrapper reports `working` when it starts and `clear` on exit, but it cannot report `blocked` or `done`, so treat it as a fallback. It is only needed when detection cannot see the agent name; a plain `exec` wrapper is usually detected without one.
 
 ## Check your integration
 

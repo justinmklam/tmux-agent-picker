@@ -15,7 +15,7 @@ Technical details for tmux-agent-picker: how state is stored, how to theme the p
 
 ## How it works
 
-There is no daemon and no screen scraping. Agents write state into pane-scoped tmux options; the picker reads those options with `tmux list-panes` and builds the fzf list in a single pass.
+There is no daemon and no screen scraping. Agents write state into pane-scoped tmux options; the picker reads those options with `tmux list-panes` and builds the fzf list in a single pass. Panes without state are also inspected for an agent process, so agents without an integration still appear.
 
 - `bin/agent-state` is the writer. Agents call it on lifecycle events, and the focus hooks call it when you look at a pane.
 - `bin/agent-pick` is the reader and modal picker. It lists agent panes, sorts them, colours them, and runs fzf.
@@ -104,9 +104,42 @@ Killing a session terminates every window and pane in it, including unsaved work
 
 The directory picker (`n`) lists zoxide directories, switches to a session whose path matches the selection, and otherwise creates a session named after the directory, adding `-2`, `-3`, … on name collisions. `Esc` returns to the agent picker. The picker does not remove directories from zoxide; run `zoxide remove <directory>` yourself.
 
+### Detected agents
+
+A pane without any `@ap_state` value is inspected for an agent process, so agents that have no lifecycle integration still appear in the list. One `ps -A -o pid=,ppid=,command=` snapshot serves the whole listing, and detection tries three sources in order:
+
+1. `#{pane_current_command}` — the foreground process name, which matches native binaries such as `claude`.
+2. The pane's command line from the snapshot, which matches shims such as `node …/codex/bin/codex.js`.
+3. Processes below the pane PID, stopping two levels down, which matches shell wrappers that `exec` or background an agent.
+
+Each source is split on whitespace and `/`, and a token is compared exactly against the agent name list after stripping a trailing `.js`, `.mjs`, `.cjs`, `.py`, or `.exe`. The default list is `claude codex copilot agy gemini aider opencode goose crush cursor-agent`. Override it with a tmux option:
+
+```tmux
+set -g @ap_detect_agents 'claude codex copilot agy my-agent'
+```
+
+`on` (or no option at all) selects the built-in list. To switch detection off entirely, so the picker lists only panes that report state:
+
+```tmux
+set -g @ap_detect_agents 'off'
+```
+
+`off` skips process inspection completely — no `ps` call, no name matching — and cannot be used as an agent name. Any other value is treated as a name list. The option is read on each listing, so a change applies to the next popup without reloading tmux.
+
+A detected pane is reported as `idle` with an age of `-`, because no process wrote a state for it. An explicit `@ap_state` always wins, including a stale value, so a pane never appears twice.
+
+**Detection limits**
+
+- Detection cannot report `blocked`, `working`, or `done`, and it has no age. Install a lifecycle integration for accurate state.
+- A path or argument token that happens to equal an agent name can produce a false positive; narrow `@ap_detect_agents` when that happens.
+- Without `ps`, only `#{pane_current_command}` is matched; command-line and child-process detection are skipped.
+- Detection runs only for panes without `@ap_state`, and the process snapshot is taken once per listing, so the cost stays near one `ps` call regardless of pane count. `@ap_detect_agents 'off'` removes even that call.
+
+For agents whose process name never appears, see the wrapper-script fallback in [AGENT_SUPPORT.md](AGENT_SUPPORT.md#agents-without-hooks).
+
 **Limitations**
 
-- The list hides panes whose foreground command is a bare shell, not arbitrary long-running programs.
+- The list hides panes whose foreground command is a bare shell, not arbitrary long-running programs. A shell pane is still listed when an agent is detected in its command line or children.
 - A pane running something other than the agent can retain stale state until `clear`.
 - The pi extension reports only for the root pi TUI session. Sub-agents and RPC/print sessions do not overwrite the visible pane state.
 
