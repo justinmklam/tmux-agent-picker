@@ -29,12 +29,15 @@ Every agent below is matched by name — as the foreground process name, or as a
 | crush | ✓ | — |
 | cursor-agent | ✓ | — |
 
-Add other agents with a name list, or turn detection off entirely:
+Detection uses a built-in name list. Replace it, add to it, or turn it off:
 
 ```tmux
-set -g @ap_detect_agents 'claude codex copilot my-agent'
-set -g @ap_detect_agents 'off'
+set -g @ap_detect_agents '+my-agent'                      # built-in list plus my-agent
+set -g @ap_detect_agents 'claude codex copilot my-agent'  # exactly these names
+set -g @ap_detect_agents 'off'                            # no detection
 ```
+
+A leading `+` adds names to the built-in list. A plain list replaces it, so any default name you leave out stops being detected.
 
 Only pi and the agents with shipped hook blocks report lifecycle state out of the box. Any other agent can report state by calling `tmux-agent-picker hook` on its lifecycle events — see [docs/AGENT_SUPPORT.md](docs/AGENT_SUPPORT.md).
 

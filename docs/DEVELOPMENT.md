@@ -127,13 +127,14 @@ A pane without any `@ap_state` value is inspected for an agent process, so agent
 2. The pane's command line from the snapshot, which matches shims such as `node …/codex/bin/codex.js`.
 3. Processes below the pane PID, stopping two levels down, which matches shell wrappers that `exec` or background an agent.
 
-Each source is split on whitespace and `/`, and a token is compared exactly against the agent name list after stripping a trailing `.js`, `.mjs`, `.cjs`, `.py`, or `.exe`. The default list is `claude codex copilot agy gemini aider opencode goose crush cursor-agent`. Override it with a tmux option:
+Each source is split on whitespace and `/`, and a token is compared exactly against the agent name list after stripping a trailing `.js`, `.mjs`, `.cjs`, `.py`, or `.exe`. The built-in list is `claude codex copilot agy gemini aider opencode goose crush cursor-agent`. Extend or replace it with a tmux option:
 
 ```tmux
-set -g @ap_detect_agents 'claude codex copilot agy my-agent'
+set -g @ap_detect_agents '+my-agent'                          # built-in list plus my-agent
+set -g @ap_detect_agents 'claude codex copilot agy my-agent'  # exactly these names
 ```
 
-`on` (or no option at all) selects the built-in list. To switch detection off entirely, so the picker lists only panes that report state:
+`on` (or no option at all) selects the built-in list. A leading `+` appends the remaining names to the built-in list, so `+my-agent` keeps every default; a plain list replaces it, so a name you leave out stops being detected. To switch detection off entirely, so the picker lists only panes that report state:
 
 ```tmux
 set -g @ap_detect_agents 'off'
@@ -146,7 +147,7 @@ A detected pane is reported as `idle` with an age of `-`, because no process wro
 **Detection limits**
 
 - Detection cannot report `blocked`, `working`, or `done`, and it has no age. Install a lifecycle integration for accurate state.
-- A path or argument token that happens to equal an agent name can produce a false positive; narrow `@ap_detect_agents` when that happens.
+- A path or argument token that happens to equal an agent name can produce a false positive; narrow `@ap_detect_agents` to a plain list so only the names you trust are detected.
 - Without `ps`, only `#{pane_current_command}` is matched; command-line and child-process detection are skipped.
 - Detection runs only for panes without `@ap_state`, and the process snapshot is taken once per listing, so the cost stays near one `ps` call regardless of pane count. `@ap_detect_agents 'off'` removes even that call.
 

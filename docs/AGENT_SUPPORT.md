@@ -214,7 +214,7 @@ rm ~/.gemini/config/plugins/tmux-agent-picker
 
 The picker detects an agent process automatically. A pane with no reported state is scanned for a name from `@ap_detect_agents` in the foreground command, the pane's command line, and its child processes, so agents like `claude`, `codex`, and `copilot` appear as `idle` rows with an age of `-` even before you write any integration. See [Detected agents](DEVELOPMENT.md#detected-agents) for the match order, the default list, and the limits.
 
-Detection reads a process name, so it cannot report `working`, `blocked`, or `done`. For those states, keep the hook integration: it is what turns an `idle` row into an actionable one. When an integration reports state, that state replaces the detected row in the same pane. To list only panes that report state, set `@ap_detect_agents` to `off`; no process inspection runs in that mode. `on`, or no option at all, selects the built-in name list.
+Detection reads a process name, so it cannot report `working`, `blocked`, or `done`. For those states, keep the hook integration: it is what turns an `idle` row into an actionable one. When an integration reports state, that state replaces the detected row in the same pane. To list only panes that report state, set `@ap_detect_agents` to `off`; no process inspection runs in that mode. `on`, or no option at all, selects the built-in name list. Prefix the value with `+`, as in `set -g @ap_detect_agents '+my-agent'`, to add names to the built-in list; a plain list replaces it.
 
 If the agent's name never appears in its process tree — an obvious case is a command that is renamed at launch, or a launcher that keeps the real command line hidden — use a shell wrapper:
 

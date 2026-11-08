@@ -43,13 +43,15 @@ age_for() {
 }
 
 # The configured name list. `off` disables detection and process inspection;
-# `on` and an unset option select the built-in list.
+# `on` and an unset option select the built-in list. A leading `+` extends the
+# built-in list with the names that follow it, so `+mytool` keeps the defaults.
 agent_names() {
   local names
   names=$(theme_option @ap_detect_agents)
   case $names in
     [Oo][Ff][Ff]) return 0 ;;
     '' | [Oo][Nn]) printf '%s' "$DEFAULT_AGENT_NAMES" ;;
+    +*) printf '%s %s' "$DEFAULT_AGENT_NAMES" "${names//+/}" ;;
     *) printf '%s' "$names" ;;
   esac
 }

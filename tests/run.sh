@@ -647,6 +647,17 @@ assert_eq 'idle claude -' \
   '(v7) on restores the default name list'
 tmux_cmd set-option -gu @ap_detect_agents
 
+# (v8) a leading '+' appends to the built-in name list instead of replacing it.
+tmux_cmd set-option -g @ap_detect_agents '+mytool'
+ADDED_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle mytool -' \
+  "$(printf '%s\n' "$ADDED_LIST" | awk -v p="$MYTOOL_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v8) additive list detects the added name'
+assert_eq 'idle claude -' \
+  "$(printf '%s\n' "$ADDED_LIST" | awk -v p="$CLAUDE_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v8) additive list keeps the default names'
+tmux_cmd set-option -gu @ap_detect_agents
+
 for pane in "$CLAUDE_PANE" "$CODEX_PANE" "$CODEX_CHILD_PANE" "$CODEX_DEPTH_PANE" "$NODE_PANE" "$MYTOOL_PANE"; do
   tmux_cmd kill-pane -t "$pane" 2>/dev/null || true
 done
