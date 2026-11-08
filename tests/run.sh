@@ -472,6 +472,30 @@ assert_eq "$(picker_rows "$PICKER" | head -n 1)" "$(picker_focused_row "$PICKER"
 tmux_cmd send-keys -t "$PICKER" Escape
 tmux_cmd send-keys -t "$PICKER" Escape
 
+# The preview follows the bottom of the pane, so the newest output is visible
+# without scrolling to it first. The agent pane is taller than the preview
+# window so the top and bottom markers cannot both fit.
+PREVIEW_LOG="$TMP_ROOT/preview-lines"
+{
+  printf 'preview-top\n'
+  for i in $(seq 1 76); do printf 'preview-filler-%02d\n' "$i"; done
+  printf 'preview-bottom\n'
+} >"$PREVIEW_LOG"
+PREVIEW_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -x 100 -y 80 -s ap-preview-scroll -c "$TMP_ROOT" "cat '$PREVIEW_LOG'; exec sleep 3600")
+run_state "$PREVIEW_PANE" set pi blocked
+PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-picker-preview "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+wait_for_normal "$PICKER" || fail '(u2) preview picker did not start'
+sleep 0.5
+PREVIEW_SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
+[[ $PREVIEW_SCREEN == *preview-bottom* ]] || {
+  printf '%s\n' "$PREVIEW_SCREEN" >&2
+  fail '(u2) preview shows the bottom of the pane'
+}
+ok '(u2) preview shows the bottom of the pane'
+[[ $PREVIEW_SCREEN != *preview-top* ]] || fail '(u2) preview scrolled past the top of the pane'
+tmux_cmd send-keys -t "$PICKER" Escape
+run_state "$PREVIEW_PANE" clear
+
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-q "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-q '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(p) q picker did not start'

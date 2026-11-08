@@ -349,7 +349,7 @@ interactive() {
     "${fzf_colors[@]}" \
     --with-shell 'bash -c' --no-input --footer "$footer" \
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \
-    --preview-window='right:50%' \
+    --preview-window='right:50%,follow' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
     --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows)" \
     --bind "/:show-input+unbind(n,x,/,j,k)+change-footer($FILTER_FOOTER)" \
