@@ -4,19 +4,40 @@ tmux-agent-picker works with any agent that can run a shell command on its lifec
 
 For state meanings and how the picker orders rows, see [State model](DEVELOPMENT.md#state-model).
 
-## The contract
+## Install with the helper
 
-From a process running inside the agent's tmux pane, call the shared wrapper on each lifecycle event. These examples use the TPM path; substitute your direct checkout path when using the [direct checkout installation](DEVELOPMENT.md#direct-checkout-installation):
+`tmux-agent-picker install` writes the integration for the agents you name and leaves every other agent's config alone. It is idempotent, preserves unrelated settings, and copies an existing target to `<target>.bak.<YYYYmmddHHMMSS>` before changing it.
+
+The first run must be `bin/agent-install` from the plugin directory, because install also links the `tmux-agent-picker` dispatcher into `~/.local/bin` and the hook configs call it by name.
 
 ```sh
-~/.tmux/plugins/tmux-agent-picker/bin/agent-hook <agent> <verb>
+bin/agent-install --all                # first run, from the plugin directory
+bin/agent-install --link               # link the dispatcher only; no agent config
+tmux-agent-picker install --all        # every supported agent
+tmux-agent-picker install pi claude    # only the named agents
+tmux-agent-picker status               # report without writing; selects all
+tmux-agent-picker uninstall --all      # remove only what this checkout installed
 ```
+
+Add `--dry-run` to print the planned changes and `--yes` to skip the confirmation prompt when stdin is not a terminal. The JSON-based agents need `jq`. Targets honour `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `COPILOT_HOME` when they are set; pi and agy use `${HOME}`. The installer manages entries that call `tmux-agent-picker hook` for the selected agent, plus the pre-rename `bin/agent-hook` form, so hooks you wrote yourself are kept.
+
+The installer never edits hook trust, sandbox, or permission settings. After it runs, restart or reload the agent and finish the per-agent step in the section below.
+
+## The contract
+
+From a process running inside the agent's tmux pane, call the dispatcher on each lifecycle event:
+
+```sh
+tmux-agent-picker hook <agent> <verb>
+```
+
+`tmux-agent-picker` must be on `PATH`. `tmux-agent-picker install` links it into `~/.local/bin`, so that directory needs to be on `PATH` in the environment that starts the agent; a GUI launcher with a minimal `PATH` will not find it. For a hook that must not depend on `PATH`, call `"$TMUX_AGENT_PICKER_ROOT/bin/tmux-agent-picker" hook <agent> <verb>` instead.
 
 The verbs are `session` (`idle`), `prompt` (`working`), `permission` (`blocked`), `activity` (`working`, skipped when the pane is already `done` or `idle`), `stop` (`done`), `interrupt` (`idle`), and `end` (cleared). The wrapper reads the agent's hook payload from stdin, ignores events from subagents, and serializes writes per pane. For a manual check you can still call the state writer directly:
 
 ```sh
-~/.tmux/plugins/tmux-agent-picker/bin/agent-state set <agent> <state>
-~/.tmux/plugins/tmux-agent-picker/bin/agent-state clear
+tmux-agent-picker state set <agent> <state>
+tmux-agent-picker state clear
 ```
 
 The process inherits `TMUX_PANE`, so the commands know which pane to update. Both commands always exit 0, print nothing, and do nothing when the state is repeated. They are safe to call on every event and cannot break the agent. `<agent>` must match `^[a-z0-9_-]{1,16}$`; it appears in the list's agent column. There is nothing to register and you do not need to change `bin/agent-pick`.
@@ -41,7 +62,7 @@ Use the agent's own hook, plugin, or extension system. `agents/pi/agent-state.ts
 
 ## Claude Code
 
-Claude Code reports its lifecycle through hooks in `~/.claude/settings.json`. Merge the block from [`agents/claude/settings.hooks.json`](../agents/claude/settings.hooks.json) into that file; the repository never writes to your home directory.
+Claude Code reports its lifecycle through hooks in `~/.claude/settings.json`. Merge the block from [`agents/claude/settings.hooks.json`](../agents/claude/settings.hooks.json) into that file; the repository does not touch your home directory unless you run `tmux-agent-picker install`.
 
 | Claude event | Reported state |
 | --- | --- |
@@ -55,20 +76,22 @@ Claude Code reports its lifecycle through hooks in `~/.claude/settings.json`. Me
 
 ### Install
 
+Run `tmux-agent-picker install claude` to merge the block automatically and restart Claude Code, or follow the manual steps below. The installer backs up `settings.json` and keeps every unrelated key.
+
 1. Open `~/.claude/settings.json` and merge the `hooks` object from `agents/claude/settings.hooks.json` into its existing `hooks` key. Merge the event arrays; do not replace the file or an existing event array.
-2. Confirm the plugin path. Each command uses `${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}`; `TMUX_AGENT_PICKER_ROOT` is exported by the plugin, so a TPM install works without edits and a direct checkout resolves through that variable.
+2. Confirm `tmux-agent-picker` resolves. Each command calls the bare dispatcher, so `~/.local/bin` must be on the `PATH` Claude Code inherits — or replace the command with an absolute path.
 3. Restart Claude Code or start a new session so it reloads the settings.
 
 ### Uninstall
 
-Remove the `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `PostToolUse`, `Stop`, `StopFailure`, and `SessionEnd` entries that call `bin/agent-hook` from `~/.claude/settings.json`, then restart Claude Code.
+Remove the `SessionStart`, `UserPromptSubmit`, `PermissionRequest`, `PostToolUse`, `Stop`, `StopFailure`, and `SessionEnd` entries that call `tmux-agent-picker hook` from `~/.claude/settings.json`, then restart Claude Code.
 
 ### Limits
 
 - Hooks fired inside a subagent carry `agent_id` and are ignored, so subagents never overwrite the state of the visible session.
 - `Notification` is deliberately not mapped: it also fires for non-blocking messages and would flip a `working` pane to `blocked` spuriously.
 - `PostToolUse` can arrive after `Stop`; the shared wrapper skips `activity` when the pane is already `done` or `idle`.
-- The hook block depends on `TMUX_AGENT_PICKER_ROOT` or the default TPM path; a checkout in another directory needs the variable or an edited literal path.
+- The hook block calls `tmux-agent-picker` by name. If Claude Code is launched with a `PATH` that omits `~/.local/bin`, use absolute commands or add the directory to that environment.
 
 ## Codex CLI
 
@@ -86,6 +109,8 @@ Codex CLI reports its lifecycle through a user-level hook file. Copy [`agents/co
 
 ### Install
 
+Run `tmux-agent-picker install codex` to merge the block into `~/.codex/hooks.json` automatically, then trust the hooks in `Settings > Hooks`. The manual copy is below for reference.
+
 1. Copy the file into place. If `~/.codex/hooks.json` already exists, merge the event arrays instead of replacing it.
 
    ```sh
@@ -97,7 +122,7 @@ Codex CLI reports its lifecycle through a user-level hook file. Copy [`agents/co
 
 ### Uninstall
 
-Delete `~/.codex/hooks.json`, or remove the events that call `bin/agent-hook`, then re-run the hook review in Codex settings.
+Delete `~/.codex/hooks.json`, or remove the events that call `tmux-agent-picker hook`, then re-run the hook review in Codex settings.
 
 ### Limits
 
@@ -123,6 +148,8 @@ Copilot CLI reports its lifecycle through a user-level hook file. Copy [`agents/
 
 ### Install
 
+Run `tmux-agent-picker install copilot` to render the asset into `$COPILOT_HOME/hooks/tmux-agent-picker.json` (default `~/.copilot`), or copy it manually:
+
 ```sh
 mkdir -p ~/.copilot/hooks
 cp agents/copilot/hooks.json ~/.copilot/hooks/tmux-agent-picker.json
@@ -147,7 +174,7 @@ rm ~/.copilot/hooks/tmux-agent-picker.json
 
 ## agy (Antigravity CLI)
 
-agy reports its lifecycle through a plugin that calls the shared wrapper. The repository ships the manifest, hook mapping, and hook shim under [`agents/agy/`](../agents/agy/); install it by symlinking that directory into agy's plugin folder.
+agy reports its lifecycle through a plugin that calls `tmux-agent-picker hook agy`. The repository ships the manifest, hook mapping, and hook shim under [`agents/agy/`](../agents/agy/); install it by symlinking that directory into agy's plugin folder. The shim calls the dispatcher by name, so it needs the `PATH` link described in [Install with the helper](#install-with-the-helper) rather than a checkout path.
 
 | agy event | Reported state |
 | --- | --- |
@@ -158,6 +185,8 @@ agy reports its lifecycle through a plugin that calls the shared wrapper. The re
 | `Stop` | `done`, or `idle` when `terminationReason` is `USER_CANCELED` |
 
 ### Install
+
+Run `tmux-agent-picker install agy` to create the plugin symlink, or install it manually:
 
 ```sh
 plugin_dir=$(tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH | cut -d= -f2-)
@@ -179,7 +208,7 @@ rm ~/.gemini/config/plugins/tmux-agent-picker
 - agy exposes no `SessionEnd` hook, so an exited session is not cleared explicitly; the picker hides panes whose foreground command is a bare shell, which covers an exited agent.
 - Only `ask_question` prompts are reported as `blocked`. Other permission prompts keep the pane in its previous state.
 - Subagent events are ignored by the conversation-id gate. The shim stores the root `conversationId` in `${XDG_RUNTIME_DIR:-${TMPDIR:-/tmp}}/tmux-agent-picker/agy-<uid>-<pane>.conv` and overwrites it on `SessionStart`.
-- agy marks a tool call failed when a hook prints non-JSON, so the shim always prints exactly `{}` and exits 0.
+- agy marks a tool call failed when a hook prints non-JSON, so the shim always prints valid JSON and exits 0; `PreToolUse` (`permission`) returns `{"decision":"allow"}` so tool execution is permitted.
 
 ## Agents without hooks
 

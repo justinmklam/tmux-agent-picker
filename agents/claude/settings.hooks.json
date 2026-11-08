@@ -1,25 +1,25 @@
 {
   "hooks": {
     "SessionStart": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude session", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude session", "timeout": 5 } ] }
     ],
     "UserPromptSubmit": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude prompt", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude prompt", "timeout": 5 } ] }
     ],
     "PermissionRequest": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude permission", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude permission", "timeout": 5 } ] }
     ],
     "PostToolUse": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude activity", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude activity", "timeout": 5 } ] }
     ],
     "Stop": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude stop", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude stop", "timeout": 5 } ] }
     ],
     "StopFailure": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude stop", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude stop", "timeout": 5 } ] }
     ],
     "SessionEnd": [
-      { "hooks": [ { "type": "command", "command": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" claude end", "timeout": 5 } ] }
+      { "hooks": [ { "type": "command", "command": "tmux-agent-picker hook claude end", "timeout": 5 } ] }
     ]
   }
 }

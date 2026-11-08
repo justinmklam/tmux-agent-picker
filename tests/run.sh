@@ -740,6 +740,24 @@ assert_eq '' "$(find "$HOOK_RUNTIME/tmux-agent-picker" -maxdepth 1 -name 'lock-*
 run_state "$HOOK_PANE" clear
 tmux_cmd kill-pane -t "$HOOK_PANE" 2>/dev/null || true
 
+# (w2) the tmux-agent-picker dispatcher fronts the internal scripts.
+DISPATCH_PANE=$(new_pane dispatcher)
+out=$(printf '{}' | TMUX_PANE=$DISPATCH_PANE TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" \
+  tmux-agent-picker hook claude session)
+assert_eq 0 "$?" '(w2) dispatcher hook exits 0'
+assert_eq '' "$out" '(w2) dispatcher hook prints nothing'
+assert_eq claude "$(pane_option "$DISPATCH_PANE" '#{@ap_agent}')" '(w2) dispatcher hook stores agent'
+assert_eq idle "$(pane_option "$DISPATCH_PANE" '#{@ap_state}')" '(w2) dispatcher hook writes state'
+TMUX_PANE=$DISPATCH_PANE tmux-agent-picker state set claude done
+assert_eq done "$(pane_option "$DISPATCH_PANE" '#{@ap_state}')" '(w2) dispatcher state runs agent-state'
+tmux-agent-picker state seen "$DISPATCH_PANE"
+assert_eq idle "$(pane_option "$DISPATCH_PANE" '#{@ap_state}')" '(w2) dispatcher state seen maps done to idle'
+out=$(tmux-agent-picker bogus 2>&1) && fail '(w2) unknown subcommand exits non-zero'
+[[ $out == *Usage* ]] || fail '(w2) unknown subcommand prints usage'
+ok '(w2) dispatcher rejects unknown subcommands'
+run_state "$DISPATCH_PANE" clear
+tmux_cmd kill-pane -t "$DISPATCH_PANE" 2>/dev/null || true
+
 # (x) Claude Code hook mapping and shipped settings block.
 CLAUDE_PANE=$(new_pane claude-hook)
 CLAUDE_PAYLOAD='{"session_id":"s1","transcript_path":"/tmp/t","cwd":"/tmp","hook_event_name":"Stop"}'
@@ -762,8 +780,8 @@ assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_agent}')" '(x) SessionEnd remo
 assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) SessionEnd removes state'
 assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_since}')" '(x) SessionEnd removes since'
 
-printf '%s' "$CLAUDE_PAYLOAD" | TMUX_AGENT_PICKER_ROOT=$ROOT TMUX_PANE=$CLAUDE_PANE \
-  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c '"$TMUX_AGENT_PICKER_ROOT/bin/agent-hook" claude prompt'
+printf '%s' "$CLAUDE_PAYLOAD" | TMUX_PANE=$CLAUDE_PANE \
+  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c 'tmux-agent-picker hook claude prompt'
 assert_eq working "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) shipped command form runs'
 
 CLAUDE_SETTINGS="$ROOT/agents/claude/settings.hooks.json"
@@ -774,12 +792,12 @@ for spec in 'SessionStart session' 'UserPromptSubmit prompt' 'PermissionRequest 
   'PostToolUse activity' 'Stop stop' 'StopFailure stop' 'SessionEnd end'; do
   set -- $spec
   grep -q "\"$1\"" "$CLAUDE_SETTINGS" || fail "(x) settings declares $1"
-  grep -qF "agent-hook\\\" claude $2" "$CLAUDE_SETTINGS" || fail "(x) settings maps $1 to $2"
+  grep -qF "tmux-agent-picker hook claude $2" "$CLAUDE_SETTINGS" || fail "(x) settings maps $1 to $2"
 done
 ok '(x) settings declares every mapped event'
-grep -qF '${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}' "$CLAUDE_SETTINGS" \
-  || fail '(x) settings resolves the plugin root'
-ok '(x) settings resolves the plugin root'
+! grep -qF 'TMUX_AGENT_PICKER_ROOT' "$CLAUDE_SETTINGS" || \
+  fail '(x) settings needs no plugin root'
+ok '(x) settings needs no plugin root'
 ! grep -q 'bin/agent-state' "$CLAUDE_SETTINGS" || fail '(x) settings never calls agent-state directly'
 ok '(x) settings never calls agent-state directly'
 
@@ -808,8 +826,8 @@ assert_eq '' "$(pane_option "$CODEX_PANE" '#{@ap_since}')" '(y) SessionEnd remov
 hook "$CODEX_PANE" codex stop '{"session_id":"s1","turn_id":"t1","hook_event_name":"Stop"}' >/dev/null
 assert_eq done "$(pane_option "$CODEX_PANE" '#{@ap_state}')" '(y) Stop with turn_id and no agent_id sets done'
 
-printf '%s' "$CODEX_PAYLOAD" | TMUX_AGENT_PICKER_ROOT=$ROOT TMUX_PANE=$CODEX_PANE \
-  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c '"$TMUX_AGENT_PICKER_ROOT/bin/agent-hook" codex prompt'
+printf '%s' "$CODEX_PAYLOAD" | TMUX_PANE=$CODEX_PANE \
+  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c 'tmux-agent-picker hook codex prompt'
 assert_eq working "$(pane_option "$CODEX_PANE" '#{@ap_state}')" '(y) shipped command form runs'
 
 CODEX_HOOKS="$ROOT/agents/codex/hooks.json"
@@ -831,7 +849,7 @@ for spec in 'SessionStart session' 'UserPromptSubmit prompt' 'PermissionRequest 
   'PostToolUse activity' 'Stop stop' 'Interrupt interrupt' 'SessionEnd end'; do
   set -- $spec
   grep -q "\"$1\"" "$CODEX_HOOKS" || fail "(y) hooks declare $1"
-  grep -qF "agent-hook\\\" codex $2" "$CODEX_HOOKS" || fail "(y) hooks map $1 to $2"
+  grep -qF "tmux-agent-picker hook codex $2" "$CODEX_HOOKS" || fail "(y) hooks map $1 to $2"
 done
 ok '(y) hooks declare every mapped event'
 ! grep -q 'bin/agent-state' "$CODEX_HOOKS" || fail '(y) hooks never call agent-state directly'
@@ -868,8 +886,8 @@ hook "$COPILOT_PANE" copilot permission "$COPILOT_PAYLOAD" >/dev/null
 hook "$COPILOT_PANE" copilot stop "$COPILOT_STOP" >/dev/null
 assert_eq done "$(pane_option "$COPILOT_PANE" '#{@ap_state}')" '(z) agentStop after blocked yields done'
 
-printf '%s' "$COPILOT_PAYLOAD" | TMUX_AGENT_PICKER_ROOT=$ROOT TMUX_PANE=$COPILOT_PANE \
-  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c '"$TMUX_AGENT_PICKER_ROOT/bin/agent-hook" copilot prompt'
+printf '%s' "$COPILOT_PAYLOAD" | TMUX_PANE=$COPILOT_PANE \
+  TMUX_AGENT_PICKER_BIN=$ROOT/bin/agent-state bash -c 'tmux-agent-picker hook copilot prompt'
 assert_eq working "$(pane_option "$COPILOT_PANE" '#{@ap_state}')" '(z) shipped command form runs'
 
 COPILOT_HOOKS="$ROOT/agents/copilot/hooks.json"
@@ -891,7 +909,7 @@ for spec in 'sessionStart session' 'userPromptSubmitted prompt' 'permissionReque
   'sessionEnd end'; do
   set -- $spec
   grep -q "\"$1\"" "$COPILOT_HOOKS" || fail "(z) hooks declare $1"
-  grep -qF "agent-hook\\\" copilot $2" "$COPILOT_HOOKS" || fail "(z) hooks map $1 to $2"
+  grep -qF "tmux-agent-picker hook copilot $2" "$COPILOT_HOOKS" || fail "(z) hooks map $1 to $2"
 done
 ok '(z) hooks declare every mapped event'
 ! grep -q 'bin/agent-state' "$COPILOT_HOOKS" || fail '(z) hooks never call agent-state directly'
@@ -914,11 +932,11 @@ assert_eq 0 "$?" '(ag) session exits 0'
 assert_eq '{}' "$out" '(ag) session prints exactly {}'
 assert_eq agy "$(pane_option "$AGY_PANE" '#{@ap_agent}')" '(ag) session stores agy'
 assert_eq idle "$(pane_option "$AGY_PANE" '#{@ap_state}')" '(ag) session maps to idle'
-for spec in 'prompt working' 'permission blocked' 'activity working'; do
+for spec in 'prompt working {}' 'permission blocked {"decision":"allow"}' 'activity working {}'; do
   set -- $spec
   out=$(agy_hook "$AGY_PANE" "$AGY_PAYLOAD" "$1")
   assert_eq 0 "$?" "(ag) $1 exits 0"
-  assert_eq '{}' "$out" "(ag) $1 prints exactly {}"
+  assert_eq "$3" "$out" "(ag) $1 prints expected response"
   assert_eq "$2" "$(pane_option "$AGY_PANE" '#{@ap_state}')" "(ag) $1 maps to $2"
 done
 out=$(agy_hook "$AGY_PANE" '{"conversationId":"root-1","terminationReason":"NO_TOOL_CALL"}' stop)
@@ -935,14 +953,31 @@ agy_hook "$AGY_FRESH_PANE" '{"terminationReason":"NO_TOOL_CALL"}' stop >/dev/nul
 assert_eq done "$(pane_option "$AGY_FRESH_PANE" '#{@ap_state}')" '(ag) stop without an id applies when none is stored'
 
 for verb in session prompt permission activity stop interrupt end; do
+  expected='{}'
+  [[ $verb == permission ]] && expected='{"decision":"allow"}'
   out=$(agy_hook "$AGY_FRESH_PANE" 'not json' "$verb")
   assert_eq 0 "$?" "(ag) $verb exits 0 on unparsable stdin"
-  assert_eq '{}' "$out" "(ag) $verb prints exactly {} on unparsable stdin"
+  assert_eq "$expected" "$out" "(ag) $verb prints expected json on unparsable stdin"
 done
 out=$(printf '{}' | XDG_RUNTIME_DIR="$AGY_RUNTIME" TMUX_PANE=$AGY_PANE \
   TMUX_AGENT_PICKER_BIN=/nonexistent "$ROOT/agents/agy/hook" session)
 assert_eq 0 "$?" '(ag) missing agent-state exits 0'
 assert_eq '{}' "$out" '(ag) missing agent-state prints exactly {}'
+
+out=$(XDG_RUNTIME_DIR="$AGY_RUNTIME" TMUX_PANE='' "$ROOT/agents/agy/hook" permission)
+assert_eq 0 "$?" '(ag) missing pane permission exits 0'
+assert_eq '{"decision":"allow"}' "$out" '(ag) missing pane permission prints allow decision'
+
+# agy loads the plugin through a symlinked directory, so the shim must reach the
+# dispatcher instead of deriving a checkout path from BASH_SOURCE.
+AGY_PLUGIN_LINK="$TMP_ROOT/agy-plugins"
+mkdir -p "$AGY_PLUGIN_LINK"
+ln -sfn "$ROOT/agents/agy" "$AGY_PLUGIN_LINK/tmux-agent-picker"
+out=$(printf '{"conversationId":"root-1"}' | XDG_RUNTIME_DIR="$AGY_RUNTIME" TMUX_PANE=$AGY_PANE \
+  TMUX_AGENT_PICKER_BIN="$ROOT/bin/agent-state" "$AGY_PLUGIN_LINK/tmux-agent-picker/hook" permission)
+assert_eq '{"decision":"allow"}' "$out" '(ag) symlinked plugin hook prints allow decision'
+assert_eq blocked "$(pane_option "$AGY_PANE" '#{@ap_state}')" \
+  '(ag) symlinked plugin hook reports state'
 
 AGY_PLUGIN="$ROOT/agents/agy/plugin.json"
 AGY_HOOKS="$ROOT/agents/agy/hooks.json"
@@ -978,6 +1013,302 @@ run_state "$AGY_PANE" clear
 run_state "$AGY_FRESH_PANE" clear
 tmux_cmd kill-pane -t "$AGY_PANE" 2>/dev/null || true
 tmux_cmd kill-pane -t "$AGY_FRESH_PANE" 2>/dev/null || true
+
+# (ai) agent-install installs, refreshes, reports, and removes file-based agents.
+INSTALL_HOME="$TMP_ROOT/install-home"
+installer() {  # home, then agent-install args
+  local home=$1; shift
+  HOME="$home" CLAUDE_CONFIG_DIR="$home/claude" \
+    CODEX_HOME="$home/codex" COPILOT_HOME="$home/copilot" \
+    "$ROOT/bin/agent-install" "$@"
+}
+find_installables() { find "$1" \( -type f -o -type l \) 2>/dev/null | sort; }
+backup_count() { find "$1" -maxdepth 1 -name "$2" 2>/dev/null | wc -l | tr -d ' '; }
+
+installer "$INSTALL_HOME" pi copilot agy --yes >"$TMP_ROOT/install-out" 2>&1
+assert_eq 0 "$?" '(ai) install pi copilot agy exits 0'
+assert_eq "$ROOT/agents/pi/agent-state.ts" \
+  "$(readlink "$INSTALL_HOME/.pi/agent/extensions/agent-state.ts")" \
+  '(ai) pi extension link points at the checkout'
+assert_eq "$ROOT/agents/agy" \
+  "$(readlink "$INSTALL_HOME/.gemini/config/plugins/tmux-agent-picker")" \
+  '(ai) agy plugin link points at the checkout'
+assert_eq "$ROOT/bin/tmux-agent-picker" \
+  "$(readlink "$INSTALL_HOME/.local/bin/tmux-agent-picker")" \
+  '(ai) install links the dispatcher onto PATH'
+COPILOT_INSTALLED="$INSTALL_HOME/copilot/hooks/tmux-agent-picker.json"
+[[ -f $COPILOT_INSTALLED ]] || fail '(ai) copilot hooks file is written'
+json_valid "$COPILOT_INSTALLED" || fail '(ai) copilot hooks file is valid JSON'
+if command -v jq >/dev/null 2>&1; then
+  assert_eq 1 "$(jq -r '.version' "$COPILOT_INSTALLED")" '(ai) copilot hooks keep version 1'
+  assert_eq 'agentStop errorOccurred permissionRequest postToolUse postToolUseFailure sessionEnd sessionStart userPromptSubmitted' \
+    "$(jq -r '.hooks | keys | join(" ")' "$COPILOT_INSTALLED")" \
+    '(ai) copilot hooks declare exactly the eight events'
+  assert_eq 8 \
+    "$(jq '[.hooks[][] | select(.bash | contains("tmux-agent-picker hook copilot "))] | length' \
+      "$COPILOT_INSTALLED")" \
+    '(ai) copilot handlers call the tmux-agent-picker dispatcher'
+fi
+[[ $(wc -l <"$COPILOT_INSTALLED" | tr -d ' ') -gt 8 ]] || \
+  fail '(ai) copilot hooks file is pretty printed'
+ok '(ai) copilot hooks file is pretty printed'
+
+before_sum=$(cksum "$COPILOT_INSTALLED")
+before_baks=$(backup_count "$COPILOT_INSTALLED" 'tmux-agent-picker.json.bak.*')
+installer "$INSTALL_HOME" pi copilot agy --yes >"$TMP_ROOT/install-out2" 2>&1
+assert_eq 0 "$?" '(ai) refresh exits 0'
+grep -q unchanged "$TMP_ROOT/install-out2" || fail '(ai) refresh reports unchanged'
+assert_eq "$before_sum" "$(cksum "$COPILOT_INSTALLED")" '(ai) refresh leaves copilot hooks unchanged'
+assert_eq "$before_baks" \
+  "$(backup_count "$COPILOT_INSTALLED" 'tmux-agent-picker.json.bak.*')" \
+  '(ai) refresh creates no backup'
+
+status=$(installer "$INSTALL_HOME" --status pi copilot agy 2>&1)
+printf '%s\n' "$status" | grep -Eq '^pi[[:space:]].*installed' || fail '(ai) status reports pi installed'
+printf '%s\n' "$status" | grep -Eq '^copilot[[:space:]].*installed' || fail '(ai) status reports copilot installed'
+printf '%s\n' "$status" | grep -Eq '^agy[[:space:]].*installed' || fail '(ai) status reports agy installed'
+ok '(ai) status reports every installed agent'
+
+UNMANAGED_HOME="$TMP_ROOT/install-unmanaged"
+mkdir -p "$UNMANAGED_HOME/.pi/agent/extensions"
+printf 'stale\n' >"$UNMANAGED_HOME/.pi/agent/extensions/agent-state.ts"
+status=$(installer "$UNMANAGED_HOME" --status pi 2>&1)
+printf '%s\n' "$status" | grep -Eq '^pi[[:space:]].*not installed' || \
+  fail '(ai) status reports an unmanaged target as not installed'
+! printf '%s\n' "$status" | grep -q conflict || fail '(ai) status no longer reports conflict'
+ok '(ai) status reports an unmanaged target as not installed'
+
+DRY_HOME="$TMP_ROOT/install-dry"
+mkdir -p "$DRY_HOME"
+dry_out=$(installer "$DRY_HOME" pi copilot agy --dry-run 2>&1)
+assert_eq 0 "$?" '(ai) dry run exits 0'
+[[ $dry_out == *'would install'* ]] || fail '(ai) dry run reports would install'
+assert_eq '' "$(find_installables "$DRY_HOME")" '(ai) dry run writes nothing'
+
+# --link puts the dispatcher on PATH without writing any agent config.
+LINK_HOME="$TMP_ROOT/install-link"
+mkdir -p "$LINK_HOME"
+installer "$LINK_HOME" --link >"$TMP_ROOT/link-out" 2>&1
+assert_eq 0 "$?" '(ai) --link exits 0'
+assert_eq "$ROOT/bin/tmux-agent-picker" \
+  "$(readlink "$LINK_HOME/.local/bin/tmux-agent-picker")" \
+  '(ai) --link creates the dispatcher link'
+assert_eq '' "$(find "$LINK_HOME" -mindepth 2 -not -path "$LINK_HOME/.local/*" 2>/dev/null)" \
+  '(ai) --link writes no agent config'
+installer "$LINK_HOME" --link >"$TMP_ROOT/link-out2" 2>&1
+grep -q 'unchanged cli' "$TMP_ROOT/link-out2" || fail '(ai) --link is idempotent'
+ok '(ai) --link is idempotent'
+HOME="$LINK_HOME" "$ROOT/bin/tmux-agent-picker" link >/dev/null 2>&1
+assert_eq 0 "$?" '(ai) dispatcher link subcommand exits 0'
+# The link is what PATH resolves, so the dispatcher must find the checkout through it.
+HOME="$LINK_HOME" "$LINK_HOME/.local/bin/tmux-agent-picker" status >"$TMP_ROOT/link-status" 2>&1
+assert_eq 0 "$?" '(ai) dispatcher runs through its PATH link'
+grep -q '^cli' "$TMP_ROOT/link-status" || fail '(ai) linked dispatcher reports the cli row'
+ok '(ai) linked dispatcher reports the cli row'
+installer "$LINK_HOME" --link pi >/dev/null 2>&1
+[[ $? -ne 0 ]] || fail '(ai) --link refuses agent names'
+ok '(ai) --link refuses agent names'
+LINK_DRY_HOME="$TMP_ROOT/install-link-dry"
+mkdir -p "$LINK_DRY_HOME"
+installer "$LINK_DRY_HOME" --link --dry-run >/dev/null 2>&1
+assert_eq '' "$(find_installables "$LINK_DRY_HOME")" '(ai) --link dry run writes nothing'
+
+installer "$INSTALL_HOME" --uninstall pi copilot agy --yes >"$TMP_ROOT/uninstall-out" 2>&1
+assert_eq 0 "$?" '(ai) uninstall exits 0'
+[[ ! -e $INSTALL_HOME/.pi/agent/extensions/agent-state && ! -L $INSTALL_HOME/.pi/agent/extensions/agent-state ]] || \
+  fail '(ai) uninstall removes the pi link'
+[[ ! -e $INSTALL_HOME/.gemini/config/plugins/tmux-agent-picker && ! -L $INSTALL_HOME/.gemini/config/plugins/tmux-agent-picker ]] || \
+  fail '(ai) uninstall removes the agy link'
+[[ ! -f $COPILOT_INSTALLED ]] || fail '(ai) uninstall removes the copilot hooks file'
+[[ ! -e $INSTALL_HOME/.local/bin/tmux-agent-picker && ! -L $INSTALL_HOME/.local/bin/tmux-agent-picker ]] || \
+  fail '(ai) uninstall removes the dispatcher link'
+ok '(ai) uninstall removes every installed target'
+status=$(installer "$INSTALL_HOME" --status pi copilot agy 2>&1)
+printf '%s\n' "$status" | grep -Eq '^pi[[:space:]].*missing' || fail '(ai) status reports pi missing'
+printf '%s\n' "$status" | grep -Eq '^copilot[[:space:]].*missing' || fail '(ai) status reports copilot missing'
+printf '%s\n' "$status" | grep -Eq '^agy[[:space:]].*missing' || fail '(ai) status reports agy missing'
+ok '(ai) status reports every removed agent as missing'
+
+USAGE_HOME="$TMP_ROOT/install-usage"
+mkdir -p "$USAGE_HOME"
+for args in 'bogus' '' '--all pi'; do
+  # shellcheck disable=SC2086  # Word splitting builds the argument list on purpose.
+  installer "$USAGE_HOME" $args >/dev/null 2>&1
+  [[ $? -ne 0 ]] || fail "(ai) usage error for: $args"
+done
+ok '(ai) usage errors exit non-zero'
+assert_eq '' "$(find_installables "$USAGE_HOME")" '(ai) usage errors install nothing'
+
+# (aj) agent-install merges Claude and Codex hooks without losing user config.
+MERGE_HOME="$TMP_ROOT/merge-home"
+mkdir -p "$MERGE_HOME/claude" "$MERGE_HOME/codex"
+CLAUDE_FILE="$MERGE_HOME/claude/settings.json"
+CODEX_FILE="$MERGE_HOME/codex/hooks.json"
+cat >"$CLAUDE_FILE" <<'JSON'
+{
+  "model": "opus",
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [ { "type": "command", "command": "echo existing-session", "timeout": 5 } ] }
+    ],
+    "Stop": [
+      { "hooks": [ { "type": "command", "command": "echo existing-stop", "timeout": 5 } ] }
+    ]
+  }
+}
+JSON
+cat >"$CODEX_FILE" <<'JSON'
+{"description":"my hooks","hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo existing-stop","timeout":5}]}]}}
+JSON
+
+marker_groups() {  # file event marker
+  jq --arg ev "$2" --arg marker "$3" \
+    '[.hooks[$ev][]? | select([.hooks[]? | .command // ""] | any(contains($marker)))] | length' "$1"
+}
+managed_command() {  # file event marker
+  jq -r --arg ev "$2" --arg marker "$3" \
+    'first(.hooks[$ev][]? | select([.hooks[]? | .command // ""] | any(contains($marker))) | .hooks[0].command) // empty' "$1"
+}
+managed_timeout() {  # file event marker
+  jq -r --arg ev "$2" --arg marker "$3" \
+    'first(.hooks[$ev][]? | select([.hooks[]? | .command // ""] | any(contains($marker))) | .hooks[0].timeout) // empty' "$1"
+}
+canonical() { jq -S -c . "$1"; }
+MERGE_EVENTS_CLAUDE='SessionStart UserPromptSubmit PermissionRequest PostToolUse Stop StopFailure SessionEnd'
+MERGE_EVENTS_CODEX='SessionStart UserPromptSubmit PermissionRequest PostToolUse Stop Interrupt SessionEnd'
+
+if command -v jq >/dev/null 2>&1; then
+installer "$MERGE_HOME" claude codex --yes >"$TMP_ROOT/merge-out" 2>&1
+assert_eq 0 "$?" '(aj) merge install exits 0'
+assert_eq 1 "$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')" \
+  '(aj) claude settings are backed up'
+[[ $(wc -l <"$CLAUDE_FILE" | tr -d ' ') -gt 10 ]] || fail '(aj) claude settings are pretty printed'
+[[ $(wc -l <"$CODEX_FILE" | tr -d ' ') -gt 10 ]] || fail '(aj) codex hooks are pretty printed'
+ok '(aj) merged JSON is pretty printed for humans'
+assert_eq 1 "$(backup_count "$MERGE_HOME/codex" 'hooks.json.bak.*')" \
+  '(aj) codex hooks are backed up'
+
+assert_eq opus "$(jq -r '.model' "$CLAUDE_FILE")" '(aj) claude keeps unrelated top-level keys'
+assert_eq 1 "$(jq '[.hooks.SessionStart[].hooks[].command | select(contains("echo existing-session"))] | length' "$CLAUDE_FILE")" \
+  '(aj) claude keeps the existing SessionStart group'
+assert_eq 1 "$(jq '[.hooks.Stop[].hooks[].command | select(contains("echo existing-stop"))] | length' "$CLAUDE_FILE")" \
+  '(aj) claude keeps the existing Stop group'
+for ev in $MERGE_EVENTS_CLAUDE; do
+  assert_eq 1 "$(marker_groups "$CLAUDE_FILE" "$ev" 'tmux-agent-picker hook claude ')" \
+    "(aj) claude $ev has exactly one managed group"
+done
+assert_match 'tmux-agent-picker hook claude end' \
+  "$(managed_command "$CLAUDE_FILE" SessionEnd 'tmux-agent-picker hook claude ')" \
+  '(aj) claude SessionEnd maps to end'
+! grep -qF "$ROOT" "$CLAUDE_FILE" || fail '(aj) claude commands carry no checkout path'
+! grep -qF 'TMUX_AGENT_PICKER_ROOT' "$CLAUDE_FILE" || \
+  fail '(aj) claude commands need no plugin root'
+ok '(aj) claude hooks carry no checkout path'
+
+# Entries written before the dispatcher rename are still recognised.
+LEGACY_HOME="$TMP_ROOT/legacy-home"
+mkdir -p "$LEGACY_HOME/claude"
+LEGACY_FILE="$LEGACY_HOME/claude/settings.json"
+cat >"$LEGACY_FILE" <<'JSON'
+{"hooks":{"SessionEnd":[{"hooks":[{"type":"command","command":"\"${TMUX_AGENT_PICKER_ROOT:-/old}/bin/agent-hook\" claude end","timeout":5}]}]}}
+JSON
+installer "$LEGACY_HOME" claude --yes >"$TMP_ROOT/legacy-out" 2>&1
+assert_eq 0 "$?" '(aj) legacy install exits 0'
+assert_eq 0 \
+  "$(jq '[.hooks.SessionEnd[].hooks[].command | select(contains("agent-hook\" claude "))] | length' "$LEGACY_FILE")" \
+  '(aj) legacy claude entries are replaced'
+assert_eq 1 "$(marker_groups "$LEGACY_FILE" SessionEnd 'tmux-agent-picker hook claude ')" \
+  '(aj) legacy claude entries become dispatcher entries'
+
+assert_eq 'my hooks' "$(jq -r '.description' "$CODEX_FILE")" '(aj) codex keeps its description'
+assert_eq 1 "$(jq '[.hooks.Stop[].hooks[].command | select(contains("echo existing-stop"))] | length' "$CODEX_FILE")" \
+  '(aj) codex keeps the existing Stop group'
+for ev in $MERGE_EVENTS_CODEX; do
+  assert_eq 1 "$(marker_groups "$CODEX_FILE" "$ev" 'tmux-agent-picker hook codex ')" \
+    "(aj) codex $ev has exactly one managed group"
+done
+for ev in Interrupt SessionEnd; do
+  assert_eq 3 "$(managed_timeout "$CODEX_FILE" "$ev" 'tmux-agent-picker hook codex ')" \
+    "(aj) codex $ev uses a 3 second timeout"
+done
+for ev in SessionStart UserPromptSubmit PermissionRequest PostToolUse Stop; do
+  assert_eq 5 "$(managed_timeout "$CODEX_FILE" "$ev" 'tmux-agent-picker hook codex ')" \
+    "(aj) codex $ev uses a 5 second timeout"
+done
+! grep -qF "$ROOT" "$CODEX_FILE" || fail '(aj) codex commands carry no checkout path'
+ok '(aj) codex hooks carry no checkout path'
+
+claude_sum=$(canonical "$CLAUDE_FILE")
+codex_sum=$(canonical "$CODEX_FILE")
+claude_baks=$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')
+codex_baks=$(backup_count "$MERGE_HOME/codex" 'hooks.json.bak.*')
+installer "$MERGE_HOME" claude codex --yes >"$TMP_ROOT/merge-out2" 2>&1
+assert_eq 0 "$?" '(aj) merge refresh exits 0'
+grep -q 'unchanged claude' "$TMP_ROOT/merge-out2" || fail '(aj) refresh reports claude unchanged'
+grep -q 'unchanged codex' "$TMP_ROOT/merge-out2" || fail '(aj) refresh reports codex unchanged'
+assert_eq "$claude_sum" "$(canonical "$CLAUDE_FILE")" '(aj) claude refresh changes nothing'
+assert_eq "$codex_sum" "$(canonical "$CODEX_FILE")" '(aj) codex refresh changes nothing'
+assert_eq "$claude_baks" "$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')" \
+  '(aj) claude refresh adds no backup'
+assert_eq "$codex_baks" "$(backup_count "$MERGE_HOME/codex" 'hooks.json.bak.*')" \
+  '(aj) codex refresh adds no backup'
+
+status=$(installer "$MERGE_HOME" --status claude codex 2>&1)
+printf '%s\n' "$status" | grep -Eq '^claude[[:space:]].*installed' || fail '(aj) status reports claude installed'
+printf '%s\n' "$status" | grep -Eq '^codex[[:space:]].*installed' || fail '(aj) status reports codex installed'
+ok '(aj) status reports merged agents installed'
+
+installer "$MERGE_HOME" --uninstall claude codex --yes >"$TMP_ROOT/merge-out3" 2>&1
+assert_eq 0 "$?" '(aj) merge uninstall exits 0'
+assert_eq opus "$(jq -r '.model' "$CLAUDE_FILE")" '(aj) uninstall keeps claude top-level keys'
+assert_eq 1 "$(jq '[.hooks.SessionStart[].hooks[].command | select(contains("echo existing-session"))] | length' "$CLAUDE_FILE")" \
+  '(aj) uninstall keeps the existing claude SessionStart group'
+assert_eq 1 "$(jq '[.hooks.Stop[].hooks[].command | select(contains("echo existing-stop"))] | length' "$CLAUDE_FILE")" \
+  '(aj) uninstall keeps the existing claude Stop group'
+! grep -qF 'tmux-agent-picker hook claude ' "$CLAUDE_FILE" || fail '(aj) uninstall removes claude markers'
+! grep -qF 'agent-hook" claude ' "$CLAUDE_FILE" || fail '(aj) uninstall removes legacy claude markers'
+[[ -f $CODEX_FILE ]] || fail '(aj) uninstall keeps the codex file with user hooks'
+assert_eq 'my hooks' "$(jq -r '.description' "$CODEX_FILE")" '(aj) uninstall keeps the codex description'
+assert_eq 1 "$(jq '[.hooks.Stop[].hooks[].command | select(contains("echo existing-stop"))] | length' "$CODEX_FILE")" \
+  '(aj) uninstall keeps the existing codex Stop group'
+! grep -qF 'tmux-agent-picker hook codex ' "$CODEX_FILE" || fail '(aj) uninstall removes codex markers'
+! grep -qF 'agent-hook" codex ' "$CODEX_FILE" || fail '(aj) uninstall removes legacy codex markers'
+ok '(aj) selective uninstall preserves user hooks'
+
+CODEX_ONLY_HOME="$TMP_ROOT/codex-only-home"
+installer "$CODEX_ONLY_HOME" codex --yes >/dev/null 2>&1
+assert_eq 0 "$?" '(aj) clean codex install exits 0'
+[[ -f "$CODEX_ONLY_HOME/codex/hooks.json" ]] || fail '(aj) clean codex install writes hooks.json'
+installer "$CODEX_ONLY_HOME" --uninstall codex --yes >/dev/null 2>&1
+assert_eq 0 "$?" '(aj) clean codex uninstall exits 0'
+[[ ! -f "$CODEX_ONLY_HOME/codex/hooks.json" ]] || \
+  fail '(aj) clean codex uninstall removes the file it created'
+ok '(aj) codex uninstall deletes a file this checkout created'
+
+claude_sum=$(canonical "$CLAUDE_FILE")
+codex_sum=$(canonical "$CODEX_FILE")
+claude_baks=$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')
+codex_baks=$(backup_count "$MERGE_HOME/codex" 'hooks.json.bak.*')
+installer "$MERGE_HOME" claude codex --dry-run >"$TMP_ROOT/merge-dry" 2>&1
+assert_eq 0 "$?" '(aj) merge dry run exits 0'
+assert_eq "$claude_sum" "$(canonical "$CLAUDE_FILE")" '(aj) claude dry run changes nothing'
+assert_eq "$codex_sum" "$(canonical "$CODEX_FILE")" '(aj) codex dry run changes nothing'
+assert_eq "$claude_baks" "$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')" \
+  '(aj) claude dry run adds no backup'
+assert_eq "$codex_baks" "$(backup_count "$MERGE_HOME/codex" 'hooks.json.bak.*')" \
+  '(aj) codex dry run adds no backup'
+
+printf '{not json\n' >"$CLAUDE_FILE"
+claude_baks=$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')
+installer "$MERGE_HOME" claude --yes >/dev/null 2>&1
+assert_eq 2 "$?" '(aj) unparseable claude settings exit 2'
+assert_eq '{not json' "$(cat "$CLAUDE_FILE")" '(aj) unparseable claude settings are untouched'
+assert_eq "$claude_baks" "$(backup_count "$MERGE_HOME/claude" 'settings.json.bak.*')" \
+  '(aj) unparseable claude settings create no backup'
+ok '(aj) invalid JSON is left untouched without a backup'
+else
+  ok '(aj) jq not installed, skipping merge tests'
+fi
 
 # The empty list keeps the new-session key reachable.
 for pane in "${ORDER_PANES[@]}"; do

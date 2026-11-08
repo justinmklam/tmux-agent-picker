@@ -36,13 +36,49 @@ set -g @ap_detect_agents 'claude codex copilot my-agent'
 set -g @ap_detect_agents 'off'
 ```
 
-Only pi and the agents with shipped hook blocks report lifecycle state out of the box. Any other agent can report state by calling `bin/agent-hook` on its lifecycle events — see [docs/AGENT_SUPPORT.md](docs/AGENT_SUPPORT.md).
+Only pi and the agents with shipped hook blocks report lifecycle state out of the box. Any other agent can report state by calling `tmux-agent-picker hook` on its lifecycle events — see [docs/AGENT_SUPPORT.md](docs/AGENT_SUPPORT.md).
+
+## Agent integrations
+
+`tmux-agent-picker install` installs, refreshes, reports, and removes the lifecycle integration for the agents you name. Hook configs call the bare `tmux-agent-picker hook <agent> <verb>`, so the installer links the dispatcher at `~/.local/bin/tmux-agent-picker`; that directory must be on `PATH` in whatever environment starts the agent. The installer edits only the selected agents' user-level config, writes readable pretty-printed JSON, preserves unrelated settings, and copies an existing target to `<target>.bak.<timestamp>` before changing it. A repeated install reports `unchanged` and writes nothing.
+
+The first install has to run as `bin/agent-install` from the plugin directory, because that is the command that creates the `PATH` link. After that both forms work:
+
+```sh
+bin/agent-install --all                      # first run, from the plugin directory
+tmux-agent-picker install --all              # pi, claude, codex, copilot, and agy
+tmux-agent-picker install pi claude          # only the named agents
+tmux-agent-picker status                     # installed, partial, not installed, missing, or invalid
+tmux-agent-picker uninstall --all            # remove only what this checkout installed
+```
+
+To put the dispatcher on `PATH` without installing any agent hooks — for example to run `tmux-agent-picker pick` or `tmux-agent-picker status` by hand — run the link on its own:
+
+```sh
+bin/agent-install --link
+```
+
+`tmux-agent-picker status` lists the link as the `cli` row.
+
+Add `--dry-run` to print the planned changes and `--yes` to skip the confirmation prompt in scripts. The installer needs `jq` for the JSON-based agents and never changes hook trust, sandbox, or permission settings. Each agent needs a restart or reload before it picks up the integration:
+
+| Agent | After installing |
+| --- | --- |
+| pi | Run `/reload` in pi. |
+| Claude Code | Restart Claude Code. |
+| Codex CLI | Trust the hooks under `Settings > Hooks`; see [Codex limits](docs/AGENT_SUPPORT.md#codex-cli). |
+| Copilot CLI | Restart Copilot. Its sandbox must allow the hook command; see [Copilot limits](docs/AGENT_SUPPORT.md#github-copilot-cli). |
+| agy | Confirm `agy plugin list` shows `tmux-agent-picker`. |
+
+For a manual install without the helper, follow the per-agent steps in [docs/AGENT_SUPPORT.md](docs/AGENT_SUPPORT.md).
 
 ## Requirements
 
 - tmux with `display-popup` support
 - [fzf](https://github.com/junegunn/fzf)
 - [zoxide](https://github.com/ajeetdsouza/zoxide) for the `n` directory picker
+- [jq](https://jqlang.github.io/jq/) for `tmux-agent-picker install` (optional; needed to install or remove the JSON-based agents)
+- `~/.local/bin` on `PATH` so agents can find the `tmux-agent-picker` dispatcher (required for hook-based lifecycle reporting)
 - pi for the built-in lifecycle reporting (optional; any agent can report state)
 
 ## Install
@@ -60,7 +96,7 @@ Reload tmux and press `prefix + I`:
 tmux source-file ~/.tmux.conf
 ```
 
-TPM does not install the pi extension, so link it separately:
+TPM does not install the pi extension, so install it separately. From the plugin directory, `bin/agent-install pi` creates the symlink and the dispatcher link, or you can link it by hand:
 
 ```sh
 plugin_dir=$(tmux show-environment -g TMUX_PLUGIN_MANAGER_PATH | cut -d= -f2-)
@@ -97,6 +133,12 @@ Agents detected from their process appear as `idle` with an age of `-`: the proc
 
 ## Uninstall
 
+If you installed any agent integration with `tmux-agent-picker install`, remove those entries first:
+
+```sh
+tmux-agent-picker uninstall --all
+```
+
 Remove the `@plugin` line from `~/.tmux.conf`, then clear the binding and hooks before reloading:
 
 ```sh
@@ -107,8 +149,9 @@ tmux set-hook -gu 'after-select-window[77]'
 tmux set-hook -gu 'client-session-changed[77]'
 tmux set-environment -gu TMUX_AGENT_PICKER_ROOT
 tmux source-file ~/.tmux.conf
-rm ~/.pi/agent/extensions/agent-state.ts
-rm ~/.gemini/config/plugins/tmux-agent-picker
+rm -f ~/.pi/agent/extensions/agent-state.ts
+rm -f ~/.gemini/config/plugins/tmux-agent-picker
+rm -f ~/.local/bin/tmux-agent-picker
 ```
 
 Run `/reload` in pi. Press `prefix + alt + u` in tmux to let TPM remove the plugin directory, or delete it under `$TMUX_PLUGIN_MANAGER_PATH` yourself. Restarting the tmux server also clears the binding, hooks, theme options, and `focus-events`.

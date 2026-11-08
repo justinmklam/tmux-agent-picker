@@ -1,5 +1,5 @@
 SHELL := bash
-SCRIPTS := bin/agent-state bin/agent-hook bin/agent-pick bin/agent-new agents/agy/hook tests/run.sh tmux-agent-picker.tmux
+SCRIPTS := bin/agent-state bin/agent-hook bin/agent-install bin/agent-pick bin/agent-new bin/tmux-agent-picker agents/agy/hook tests/run.sh tmux-agent-picker.tmux
 
 .PHONY: help test check syntax lint reload
 

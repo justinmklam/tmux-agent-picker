@@ -9,7 +9,9 @@ Keep the implementation small and shell-first. Do not add a daemon, compiled com
 ## Repository layout
 
 - `bin/agent-state` — best-effort tmux pane state writer. It supports `set`, `seen`, and `clear`.
+- `bin/tmux-agent-picker` — single entry point dispatching `hook`, `install`, `status`, `uninstall`, `pick`, `new`, and `state` to the scripts below.
 - `bin/agent-hook` — agent hook wrapper translating hook payloads into `bin/agent-state` writes.
+- `bin/agent-install` — installs, refreshes, reports, and removes agent lifecycle integrations for selected agents.
 - `bin/agent-pick` — agent listing and modal fzf picker.
 - `bin/agent-new` — zoxide directory picker and switch-or-create session logic.
 - `agents/pi/agent-state.ts` — pi lifecycle extension for the root TUI session.
@@ -69,9 +71,18 @@ The test harness must use a private tmux server, `TMUX_TMPDIR`, and `_ZO_DATA_DI
 - Repeated `set` calls must not refresh `@ap_since`.
 - `seen` changes only `done` to `idle` and preserves `@ap_since`.
 - Calls from the pi extension must remain serialized so lifecycle events cannot land out of order.
-- Agent hook configs must call `bin/agent-hook <agent> <verb>` and must not call `bin/agent-state` directly, so subagent gating and per-pane serialization stay in one place.
-- agy hook commands print exactly `{}` on stdout and must gate events by `conversationId`.
+- Agent hook configs must call `tmux-agent-picker hook <agent> <verb>` and must not call `bin/agent-state` directly, so subagent gating and per-pane serialization stay in one place. Hook configs must not embed a checkout path.
+- agy hook commands must gate events by `conversationId`, printing `{"decision":"allow"}` for `PreToolUse` (`permission`) so tools are permitted, and `{}` for other events.
 - The extension reports only for the root pi TUI session. Do not make sub-agents overwrite the visible pane state.
+
+### Installer
+
+- `bin/agent-install` is idempotent: a repeated install reports `unchanged` and writes nothing.
+- Install links the dispatcher at `$HOME/.local/bin/tmux-agent-picker`, because hook configs call it by name; report a warning when that directory is not on `PATH`. `--link` performs only that step.
+- Preserve unrelated config. Install prunes only groups whose handler contains `tmux-agent-picker hook <agent> ` or the pre-rename `agent-hook" <agent> ` marker, then appends the rendered asset groups.
+- Copy every existing target to `<target>.bak.<YYYYmmddHHMMSS>` before writing, validate the new JSON, and write through a temp file in the target's directory.
+- Never change hook trust, sandbox, permission, or detection settings automatically; print the required next step instead.
+- Never run the installer from `tmux-agent-picker.tmux` or the tmux config; installation stays explicit.
 
 ### Picker behavior
 

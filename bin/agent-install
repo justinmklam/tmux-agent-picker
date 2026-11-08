@@ -1,0 +1,878 @@
+#!/usr/bin/env bash
+set -u
+
+# Install, refresh, remove, and report the lifecycle integration for selected
+# agents. Only the selected agents' user-level config is touched.
+#
+#   (default)     install or refresh the selected agents
+#   --uninstall   remove only entries and symlinks this checkout manages
+#   --status      report state; selects all agents when no names are given
+#
+# Exit codes: 0 success, 1 usage error or declined prompt, 2 environment or
+# data failure.
+
+ROOT=$(cd "$(dirname "$0")/.." && pwd -P)
+AGENT_ORDER=(pi claude codex copilot agy)
+CLI_NAME=tmux-agent-picker
+
+# Colourise status rows only when a human reads them on a terminal.
+C_RESET= C_GREEN= C_YELLOW= C_RED= C_DIM=
+if [[ -t 1 && -z ${NO_COLOR:-} ]]; then
+  C_RESET=$'\033[0m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_RED=$'\033[31m'
+  C_DIM=$'\033[2m'
+fi
+
+usage() {
+  cat <<'EOF'
+Usage: agent-install [--all] [--uninstall] [--status] [--link] [--dry-run] [--yes] [agent...]
+
+Agents: pi claude codex copilot agy
+
+  (default)     install or refresh the selected agents
+  --uninstall   remove only entries and symlinks this checkout manages
+  --status      report state; selects all agents when no names are given
+  --link        link the tmux-agent-picker dispatcher onto PATH only
+  --all         select every agent; cannot be combined with agent names
+  --dry-run     print planned changes without writing
+  --yes         skip the confirmation prompt (required when stdin is not a TTY)
+  -h, --help    show usage
+EOF
+}
+
+die_usage() {
+  printf 'agent-install: %s\n' "$1" >&2
+  printf 'agent-install: see --help for usage\n' >&2
+  exit 1
+}
+
+err() {
+  printf 'agent-install: %s\n' "$1" >&2
+}
+
+# Hook configs call `tmux-agent-picker hook <agent> <verb>`. Entries written
+# before that rename called the internal script, so matching both keeps an
+# existing install replaceable instead of leaving it orphaned.
+markers_for() {  # agent; prints a JSON array of managed-command substrings
+  printf '["agent-hook\\" %s ", "tmux-agent-picker hook %s "]\n' "$1" "$1"
+}
+
+asset_for() {
+  case $1 in
+    pi) printf '%s\n' "$ROOT/agents/pi/agent-state.ts" ;;
+    claude) printf '%s\n' "$ROOT/agents/claude/settings.hooks.json" ;;
+    codex) printf '%s\n' "$ROOT/agents/codex/hooks.json" ;;
+    copilot) printf '%s\n' "$ROOT/agents/copilot/hooks.json" ;;
+    agy) printf '%s\n' "$ROOT/agents/agy" ;;
+  esac
+}
+
+target_for() {
+  local home=${HOME:-}
+  case $1 in
+    pi) printf '%s/.pi/agent/extensions/agent-state.ts\n' "$home" ;;
+    claude) printf '%s/settings.json\n' "${CLAUDE_CONFIG_DIR:-$home/.claude}" ;;
+    codex) printf '%s/hooks.json\n' "${CODEX_HOME:-$home/.codex}" ;;
+    copilot) printf '%s/hooks/tmux-agent-picker.json\n' "${COPILOT_HOME:-$home/.copilot}" ;;
+    agy) printf '%s/.gemini/config/plugins/tmux-agent-picker\n' "$home" ;;
+  esac
+}
+
+jq_has() { command -v jq >/dev/null 2>&1; }
+
+require_jq() {
+  if ! jq_has; then
+    err "$1: jq is required for this agent; install jq and rerun"
+    return 1
+  fi
+}
+
+# Resolve a symlink chain without readlink -f, which older macOS lacks.
+resolve_link() {
+  local path=$1 target hops=0 dir base
+  while [[ -L $path ]]; do
+    hops=$((hops + 1))
+    (( hops <= 40 )) || return 1
+    target=$(readlink "$path" 2>/dev/null) || return 1
+    case $target in
+      /*) path=$target ;;
+      *) path=$(dirname "$path")/$target ;;
+    esac
+  done
+  dir=$(dirname "$path")
+  base=$(basename "$path")
+  dir=$(cd "$dir" 2>/dev/null && pwd -P) || return 1
+  printf '%s/%s\n' "${dir%/}" "$base"
+}
+
+is_managed_link() {  # path expected
+  local resolved
+  resolved=$(resolve_link "$1") || return 1
+  [[ $resolved == "$2" ]]
+}
+
+backup_target() {  # path; prints the backup path
+  local path=$1 stamp candidate n=0
+  stamp=$(date +%Y%m%d%H%M%S)
+  candidate="$path.bak.$stamp"
+  while [[ -e $candidate || -L $candidate ]]; do
+    n=$((n + 1))
+    candidate="$path.bak.$stamp.$n"
+  done
+  cp -p "$path" "$candidate" || return 1
+  printf '%s\n' "$candidate"
+}
+
+# Write pretty-printed, validated JSON through a temp file in the target's
+# directory so the target keeps its mode and is never left half-written.
+write_json() {  # target canonical-json
+  local target=$1 content=$2 dir tmp backup
+  # Canonical JSON is only for comparisons; humans have to read the target.
+  if ! content=$(printf '%s' "$content" | jq -S .); then
+    err "refusing to write unrenderable JSON: $target"
+    return 1
+  fi
+  dir=$(dirname "$target")
+  mkdir -p "$dir" || {
+    err "cannot create directory: $dir"
+    return 1
+  }
+  tmp=$(mktemp "$dir/.agent-install.XXXXXX") || {
+    err "cannot create a temp file in: $dir"
+    return 1
+  }
+  if ! printf '%s\n' "$content" >"$tmp"; then
+    rm -f "$tmp"
+    err "cannot write: $tmp"
+    return 1
+  fi
+  if ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    err "refusing to write invalid JSON: $target"
+    return 1
+  fi
+  if [[ -e $target ]]; then
+    backup=$(backup_target "$target") || {
+      rm -f "$tmp"
+      err "cannot back up: $target"
+      return 1
+    }
+    printf 'backup %s\n' "$backup"
+  fi
+  if ! cat "$tmp" >"$target"; then
+    rm -f "$tmp"
+    err "cannot write: $target"
+    return 1
+  fi
+  rm -f "$tmp"
+}
+
+render_json() {  # asset; canonical JSON for comparison and pretty printing
+  jq -S -c . "$1"
+}
+
+marker_count() {  # file markers-json
+  jq --argjson markers "$2" \
+    '[.. | strings | select(. as $s | any($markers[]; . as $m | $s | contains($m)))] | length' \
+    "$1" 2>/dev/null
+}
+
+print_row() {  # agent state target
+  local agent=$1 state=$2 target=$3 color pad
+  case $state in
+    installed) color=$C_GREEN ;;
+    partial | 'not installed') color=$C_YELLOW ;;
+    invalid) color=$C_RED ;;
+    *) color=$C_DIM ;;
+  esac
+  # Pad the plain label before colourising so the columns stay aligned.
+  pad=$((14 - ${#state}))
+  (( pad < 1 )) && pad=1
+  printf '%-8s %s%s%*s%s\n' "$agent" "$color" "$state" "$pad" '' "$C_RESET$target"
+}
+
+# --- claude and codex: hook merges -------------------------------------------
+
+# Replace the managed groups for every asset event with the rendered asset and
+# keep every unrelated group. Reads the current document on stdin.
+merge_json() {  # rendered-asset-json markers-json keep-empty-hooks
+  jq -S -c --argjson asset "$1" --argjson markers "$2" --argjson keep "$3" '
+    def is_managed:
+      ([.hooks[]? | (.command // "")]
+       | any(.[]; . as $c | any($markers[]; . as $m | $c | contains($m))));
+    . as $cur
+    | ($asset.hooks // {}) as $new
+    | .hooks = (
+        reduce ($new | keys_unsorted[]) as $ev (
+          ($cur.hooks // {});
+          .[$ev] = ((.[$ev] // []) | map(select(is_managed | not))) + ($new[$ev] // [])
+        )
+        | with_entries(select((.value | length) > 0))
+      )
+    | if ($keep == 0 and ((.hooks // {}) | length) == 0) then del(.hooks) else . end
+  '
+}
+
+# Drop every group this checkout wrote. Reads the current document on stdin.
+prune_json() {  # markers-json keep-empty-hooks
+  jq -S -c --argjson markers "$1" --argjson keep "$2" '
+    def is_managed:
+      ([.hooks[]? | (.command // "")]
+       | any(.[]; . as $c | any($markers[]; . as $m | $c | contains($m))));
+    if (.hooks | type) == "object" then
+      .hooks = (
+        .hooks
+        | with_entries(.value |= map(select(is_managed | not)))
+        | with_entries(select((.value | length) > 0))
+      )
+      | if ($keep == 0 and (.hooks | length) == 0) then del(.hooks) else . end
+    else . end
+  '
+}
+
+base_json() {  # agent rendered-asset-json; the document merged into when absent
+  case $1 in
+    claude) printf '{}\n' ;;
+    codex)
+      printf '%s' "$2" | jq -S -c '
+        if has("description") then {description: .description, hooks: {}} else {hooks: {}} end
+      '
+      ;;
+  esac
+}
+
+keep_empty_hooks() {
+  [[ $1 == codex ]] && printf 1 || printf 0
+}
+
+install_merge() {  # agent
+  local agent=$1 target asset marker rendered current merged existed=0
+  require_jq "$agent" || return 1
+  target=$(target_for "$agent")
+  asset=$(asset_for "$agent")
+  if [[ ! -f $asset ]]; then
+    err "$agent: missing asset: $asset"
+    return 1
+  fi
+  marker=$(markers_for "$agent")
+  if ! rendered=$(render_json "$asset"); then
+    err "$agent: cannot render $asset"
+    return 1
+  fi
+  if [[ -e $target ]]; then
+    existed=1
+    if ! current=$(jq -S -c . "$target" 2>/dev/null); then
+      err "$agent: $target is not valid JSON; fix it and rerun (no changes written)"
+      return 1
+    fi
+  else
+    current=$(base_json "$agent" "$rendered") || {
+      err "$agent: cannot build the base config"
+      return 1
+    }
+  fi
+  if ! merged=$(printf '%s' "$current" | merge_json "$rendered" "$marker" "$(keep_empty_hooks "$agent")"); then
+    err "$agent: cannot merge hooks into $target"
+    return 1
+  fi
+  if (( existed )) && [[ $merged == "$current" ]]; then
+    printf 'unchanged %s %s\n' "$agent" "$target"
+    return 0
+  fi
+  if (( dry_run )); then
+    if (( existed )); then
+      printf 'would update %s %s\n' "$agent" "$target"
+    else
+      printf 'would install %s %s\n' "$agent" "$target"
+    fi
+    return 0
+  fi
+  if ! write_json "$target" "$merged"; then
+    return 1
+  fi
+  if (( existed )); then
+    printf 'updated %s %s\n' "$agent" "$target"
+  else
+    printf 'installed %s %s\n' "$agent" "$target"
+  fi
+}
+
+# A Codex file belongs to this checkout only when nothing but our description
+# and hooks remain, so anything else is kept and pruned in place.
+codex_pristine() {  # pruned-json asset
+  local desc
+  desc=$(jq -r '.description // empty' "$2" 2>/dev/null) || return 1
+  [[ -n $desc ]] || return 1
+  printf '%s' "$1" | jq -e --arg desc "$desc" '
+    (keys | sort) == ["description", "hooks"] and .description == $desc
+  ' >/dev/null 2>&1
+}
+
+uninstall_merge() {  # agent
+  local agent=$1 target asset marker current pruned backup
+  require_jq "$agent" || return 1
+  target=$(target_for "$agent")
+  asset=$(asset_for "$agent")
+  marker=$(markers_for "$agent")
+  if [[ ! -e $target ]]; then
+    printf 'unchanged %s %s (absent)\n' "$agent" "$target"
+    return 0
+  fi
+  if ! current=$(jq -S -c . "$target" 2>/dev/null); then
+    err "$agent: $target is not valid JSON; fix it and rerun (no changes written)"
+    return 1
+  fi
+  if [[ $(marker_count "$target" "$marker") -eq 0 ]]; then
+    printf 'skipped %s: %s has no entries managed by this checkout\n' "$agent" "$target"
+    return 0
+  fi
+  if ! pruned=$(printf '%s' "$current" | prune_json "$marker" "$(keep_empty_hooks "$agent")"); then
+    err "$agent: cannot prune hooks from $target"
+    return 1
+  fi
+  if (( dry_run )); then
+    printf 'would remove %s %s\n' "$agent" "$target"
+    return 0
+  fi
+  if [[ $agent == codex ]] && codex_pristine "$pruned" "$asset"; then
+    backup=$(backup_target "$target") || {
+      err "$agent: cannot back up: $target"
+      return 1
+    }
+    printf 'backup %s\n' "$backup"
+    if ! rm -f "$target"; then
+      err "$agent: cannot remove: $target"
+      return 1
+    fi
+    printf 'removed %s %s\n' "$agent" "$target"
+    return 0
+  fi
+  if ! write_json "$target" "$pruned"; then
+    return 1
+  fi
+  printf 'removed %s %s (kept user hooks)\n' "$agent" "$target"
+}
+
+status_merge() {  # agent
+  local agent=$1 target asset marker rendered current merged marker_hits state
+  require_jq "$agent" || return 1
+  target=$(target_for "$agent")
+  asset=$(asset_for "$agent")
+  if [[ ! -e $target ]]; then
+    print_row "$agent" missing "$target"
+    return 0
+  fi
+  if ! current=$(jq -S -c . "$target" 2>/dev/null); then
+    print_row "$agent" invalid "$target"
+    return 0
+  fi
+  if ! rendered=$(render_json "$asset"); then
+    err "$agent: cannot render $asset"
+    return 1
+  fi
+  marker=$(markers_for "$agent")
+  marker_hits=$(marker_count "$target" "$marker")
+  if ! merged=$(printf '%s' "$current" | merge_json "$rendered" "$marker" "$(keep_empty_hooks "$agent")"); then
+    print_row "$agent" invalid "$target"
+    return 0
+  fi
+  if [[ $merged == "$current" ]]; then
+    state=installed
+  elif [[ ${marker_hits:-0} -gt 0 ]]; then
+    state=partial
+  else
+    state='not installed'
+  fi
+  print_row "$agent" "$state" "$target"
+}
+
+# --- pi and agy: symlinks ----------------------------------------------------
+
+install_link() {  # agent
+  local agent=$1 target expected current backup
+  target=$(target_for "$agent")
+  expected=$(asset_for "$agent")
+  if [[ ! -e $expected ]]; then
+    err "$agent: missing asset: $expected"
+    return 1
+  fi
+  if [[ -L $target ]]; then
+    if is_managed_link "$target" "$expected"; then
+      printf 'unchanged %s %s\n' "$agent" "$target"
+      return 0
+    fi
+    current=$(readlink "$target" 2>/dev/null || printf '?')
+    if (( dry_run )); then
+      printf 'would update %s %s (replaces the link to %s)\n' "$agent" "$target" "$current"
+      return 0
+    fi
+    mkdir -p "$(dirname "$target")" || {
+      err "$agent: cannot create directory: $(dirname "$target")"
+      return 1
+    }
+    if ! ln -sfn "$expected" "$target"; then
+      err "$agent: cannot replace the link: $target"
+      return 1
+    fi
+    printf 'updated %s %s (was %s)\n' "$agent" "$target" "$current"
+    return 0
+  fi
+  if [[ -e $target ]]; then
+    if (( dry_run )); then
+      printf 'would update %s %s (backs up the existing file first)\n' "$agent" "$target"
+      return 0
+    fi
+    backup=$(backup_target "$target") || {
+      err "$agent: cannot back up: $target"
+      return 1
+    }
+    printf 'backup %s\n' "$backup"
+    mkdir -p "$(dirname "$target")" || {
+      err "$agent: cannot create directory: $(dirname "$target")"
+      return 1
+    }
+    if ! ln -sfn "$expected" "$target"; then
+      err "$agent: cannot replace the file: $target"
+      return 1
+    fi
+    printf 'updated %s %s (replaced a regular file)\n' "$agent" "$target"
+    return 0
+  fi
+  if (( dry_run )); then
+    printf 'would install %s %s\n' "$agent" "$target"
+    return 0
+  fi
+  mkdir -p "$(dirname "$target")" || {
+    err "$agent: cannot create directory: $(dirname "$target")"
+    return 1
+  }
+  if ! ln -sfn "$expected" "$target"; then
+    err "$agent: cannot create the link: $target"
+    return 1
+  fi
+  printf 'installed %s %s\n' "$agent" "$target"
+}
+
+uninstall_link() {  # agent
+  local agent=$1 target expected
+  target=$(target_for "$agent")
+  expected=$(asset_for "$agent")
+  if [[ -L $target ]]; then
+    if ! is_managed_link "$target" "$expected"; then
+      printf 'skipped %s: %s is not managed by this checkout\n' "$agent" "$target"
+      return 0
+    fi
+    if (( dry_run )); then
+      printf 'would remove %s %s\n' "$agent" "$target"
+      return 0
+    fi
+    if ! rm -f "$target"; then
+      err "$agent: cannot remove: $target"
+      return 1
+    fi
+    printf 'removed %s %s\n' "$agent" "$target"
+    return 0
+  fi
+  if [[ -e $target ]]; then
+    printf 'skipped %s: %s is not managed by this checkout\n' "$agent" "$target"
+    return 0
+  fi
+  printf 'unchanged %s %s (absent)\n' "$agent" "$target"
+}
+
+status_link() {  # agent
+  local agent=$1 target expected
+  target=$(target_for "$agent")
+  expected=$(asset_for "$agent")
+  if [[ -L $target ]]; then
+    if is_managed_link "$target" "$expected"; then
+      print_row "$agent" installed "$target"
+    else
+      print_row "$agent" 'not installed' "$target"
+    fi
+  elif [[ -e $target ]]; then
+    print_row "$agent" 'not installed' "$target"
+  else
+    print_row "$agent" missing "$target"
+  fi
+}
+
+# --- copilot: rendered dedicated hook file -----------------------------------
+
+install_copilot() {
+  local target rendered current
+  require_jq copilot || return 1
+  target=$(target_for copilot)
+  if ! rendered=$(render_json "$ROOT/agents/copilot/hooks.json"); then
+    err 'copilot: cannot render agents/copilot/hooks.json'
+    return 1
+  fi
+  if [[ -e $target ]]; then
+    if current=$(jq -S -c . "$target" 2>/dev/null) && [[ $current == "$rendered" ]]; then
+      printf 'unchanged copilot %s\n' "$target"
+      return 0
+    fi
+    # This file is dedicated to the checkout, so replace it without parsing.
+    if (( dry_run )); then
+      printf 'would update copilot %s\n' "$target"
+      return 0
+    fi
+    if ! write_json "$target" "$rendered"; then
+      return 1
+    fi
+    printf 'updated copilot %s\n' "$target"
+    return 0
+  fi
+  if (( dry_run )); then
+    printf 'would install copilot %s\n' "$target"
+    return 0
+  fi
+  if ! write_json "$target" "$rendered"; then
+    return 1
+  fi
+  printf 'installed copilot %s\n' "$target"
+  return 0
+}
+
+uninstall_copilot() {
+  local target backup
+  target=$(target_for copilot)
+  if [[ ! -e $target ]]; then
+    printf 'unchanged copilot %s (absent)\n' "$target"
+    return 0
+  fi
+  if (( dry_run )); then
+    printf 'would remove copilot %s\n' "$target"
+    return 0
+  fi
+  backup=$(backup_target "$target") || {
+    err "copilot: cannot back up: $target"
+    return 1
+  }
+  printf 'backup %s\n' "$backup"
+  if ! rm -f "$target"; then
+    err "copilot: cannot remove: $target"
+    return 1
+  fi
+  printf 'removed copilot %s\n' "$target"
+}
+
+status_copilot() {
+  local target rendered current state marker
+  require_jq copilot || return 1
+  target=$(target_for copilot)
+  if [[ ! -e $target ]]; then
+    print_row copilot missing "$target"
+    return 0
+  fi
+  if ! rendered=$(render_json "$ROOT/agents/copilot/hooks.json"); then
+    err 'copilot: cannot render agents/copilot/hooks.json'
+    return 1
+  fi
+  if ! current=$(jq -S -c . "$target" 2>/dev/null); then
+    print_row copilot invalid "$target"
+    return 0
+  fi
+  marker=$(markers_for copilot)
+  if [[ $current == "$rendered" ]]; then
+    state=installed
+  elif [[ $(marker_count "$target" "$marker") -gt 0 ]]; then
+    state=partial
+  else
+    state='not installed'
+  fi
+  print_row copilot "$state" "$target"
+}
+
+# --- the dispatcher link -----------------------------------------------------
+
+# Hook configs call the bare `tmux-agent-picker`, so a link in a PATH directory
+# is what makes them work. It lives outside the agent list because every agent
+# depends on it.
+cli_target() {
+  printf '%s/.local/bin/%s\n' "${HOME:-}" "$CLI_NAME"
+}
+
+cli_asset() {
+  printf '%s/bin/%s\n' "$ROOT" "$CLI_NAME"
+}
+
+cli_path_note() {
+  local dir
+  dir=$(dirname "$(cli_target)")
+  case ":${PATH:-}:" in
+    *":$dir:"*) ;;
+    *)
+      printf 'warning: %s is not on PATH; hook commands will not find %s\n' \
+        "$dir" "$CLI_NAME" >&2
+      ;;
+  esac
+}
+
+install_cli() {
+  local target expected current backup
+  target=$(cli_target)
+  expected=$(cli_asset)
+  if [[ ! -f $expected ]]; then
+    err "cli: missing dispatcher: $expected"
+    return 1
+  fi
+  if [[ -L $target ]] && is_managed_link "$target" "$expected"; then
+    printf 'unchanged cli %s\n' "$target"
+    cli_path_note
+    return 0
+  fi
+  if (( dry_run )); then
+    printf 'would install cli %s\n' "$target"
+    return 0
+  fi
+  mkdir -p "$(dirname "$target")" || {
+    err "cli: cannot create directory: $(dirname "$target")"
+    return 1
+  }
+  if [[ -e $target && ! -L $target ]]; then
+    backup=$(backup_target "$target") || {
+      err "cli: cannot back up: $target"
+      return 1
+    }
+    printf 'backup %s\n' "$backup"
+  fi
+  current=''
+  [[ -L $target ]] && current=$(readlink "$target" 2>/dev/null || true)
+  if ! ln -sfn "$expected" "$target"; then
+    err "cli: cannot create the link: $target"
+    return 1
+  fi
+  if [[ -n $current ]]; then
+    printf 'updated cli %s (was %s)\n' "$target" "$current"
+  else
+    printf 'installed cli %s\n' "$target"
+  fi
+  cli_path_note
+}
+
+uninstall_cli() {
+  local target expected
+  target=$(cli_target)
+  expected=$(cli_asset)
+  if [[ -L $target ]]; then
+    if ! is_managed_link "$target" "$expected"; then
+      printf 'skipped cli: %s is not managed by this checkout\n' "$target"
+      return 0
+    fi
+    if (( dry_run )); then
+      printf 'would remove cli %s\n' "$target"
+      return 0
+    fi
+    if ! rm -f "$target"; then
+      err "cli: cannot remove: $target"
+      return 1
+    fi
+    printf 'removed cli %s\n' "$target"
+    return 0
+  fi
+  if [[ -e $target ]]; then
+    printf 'skipped cli: %s is not managed by this checkout\n' "$target"
+    return 0
+  fi
+  printf 'unchanged cli %s (absent)\n' "$target"
+}
+
+status_cli() {
+  local target expected
+  target=$(cli_target)
+  expected=$(cli_asset)
+  if [[ -L $target ]] && is_managed_link "$target" "$expected"; then
+    print_row cli installed "$target"
+  elif [[ -e $target ]]; then
+    print_row cli 'not installed' "$target"
+  else
+    print_row cli missing "$target"
+  fi
+}
+
+# Keep the link while any agent config still points at a managed hook entry.
+cli_still_needed() {
+  local agent target hits
+  for agent in claude codex copilot; do
+    target=$(target_for "$agent")
+    [[ -f $target ]] || continue
+    jq_has || return 0
+    hits=$(marker_count "$target" "$(markers_for "$agent")")
+    [[ ${hits:-0} -gt 0 ]] && return 0
+  done
+  return 1
+}
+
+# --- dispatch ----------------------------------------------------------------
+
+agent_install() {
+  case $1 in
+    pi | agy) install_link "$1" ;;
+    copilot) install_copilot ;;
+    claude | codex) install_merge "$1" ;;
+  esac
+}
+
+agent_uninstall() {
+  case $1 in
+    pi | agy) uninstall_link "$1" ;;
+    copilot) uninstall_copilot ;;
+    claude | codex) uninstall_merge "$1" ;;
+  esac
+}
+
+agent_status() {
+  case $1 in
+    pi | agy) status_link "$1" ;;
+    copilot) status_copilot ;;
+    claude | codex) status_merge "$1" ;;
+  esac
+}
+
+next_step() {
+  case $1 in
+    pi) printf 'next: run /reload in pi to load the extension\n' ;;
+    claude) printf 'next: restart Claude Code\n' ;;
+    codex) printf 'next: trust the hooks in Codex Settings > Hooks\n' ;;
+    copilot) printf 'next: restart Copilot; hooks also require its sandbox to allow the command\n' ;;
+    agy) printf 'next: confirm agy plugin list shows tmux-agent-picker\n' ;;
+  esac
+}
+
+confirm_run() {  # verb
+  local verb=$1 agent reply=
+  printf 'agent-install: %s for %s\n' "$verb" "${selected[*]}"
+  for agent in "${selected[@]}"; do
+    printf '  %-8s %s\n' "$agent" "$(target_for "$agent")"
+  done
+  (( assume_yes || dry_run )) && return 0
+  if [[ ! -t 0 ]]; then
+    err "refusing to $verb without --yes when stdin is not a TTY"
+    return 1
+  fi
+  printf 'Proceed? [y/N] '
+  IFS= read -r reply || reply=
+  case $reply in
+    y | Y) return 0 ;;
+    *)
+      printf 'agent-install: aborted\n' >&2
+      return 1
+      ;;
+  esac
+}
+
+main() {
+  local all=0 do_uninstall=0 do_status=0 do_link=0 agent arg wanted failed=0
+  dry_run=0
+  assume_yes=0
+  local names=() selected=()
+
+  for arg in "$@"; do
+    case $arg in
+      --all) all=1 ;;
+      --uninstall) do_uninstall=1 ;;
+      --status) do_status=1 ;;
+      --link) do_link=1 ;;
+      --dry-run) dry_run=1 ;;
+      --yes | -y) assume_yes=1 ;;
+      -h | --help) usage; exit 0 ;;
+      --) ;;
+      -*) die_usage "unknown option: $arg" ;;
+      *) names+=("$arg") ;;
+    esac
+  done
+
+  (( do_uninstall + do_status <= 1 )) || die_usage '--uninstall cannot be combined with --status'
+  (( do_status && dry_run )) && die_usage '--dry-run cannot be combined with --status'
+
+  # --link is a standalone action: it writes no agent config, so it needs no names.
+  if (( do_link )); then
+    (( all + do_uninstall + do_status == 0 )) || die_usage '--link cannot be combined with other modes'
+    ((${#names[@]} == 0)) || die_usage '--link does not take agent names'
+    if [[ -z ${HOME:-} ]]; then
+      err 'HOME is not set'
+      exit 2
+    fi
+    install_cli || exit 2
+    exit 0
+  fi
+
+  if (( all && ${#names[@]} > 0 )); then
+    die_usage '--all cannot be combined with agent names'
+  fi
+
+  if ((${#names[@]} > 0)); then
+    for wanted in "${names[@]}"; do
+      local known=0 candidate
+      for candidate in "${AGENT_ORDER[@]}"; do
+        [[ $candidate == "$wanted" ]] && known=1
+      done
+      (( known )) || die_usage "unknown agent: $wanted (valid: ${AGENT_ORDER[*]})"
+    done
+  fi
+
+  if (( all )); then
+    selected=("${AGENT_ORDER[@]}")
+  elif ((${#names[@]} == 0)); then
+    if (( do_status )); then
+      selected=("${AGENT_ORDER[@]}")
+    else
+      die_usage 'select at least one agent or pass --all'
+    fi
+  else
+    # Fixed processing order regardless of argument order, duplicates removed.
+    for agent in "${AGENT_ORDER[@]}"; do
+      for wanted in "${names[@]}"; do
+        if [[ $wanted == "$agent" ]]; then
+          selected+=("$agent")
+          break
+        fi
+      done
+    done
+  fi
+
+  if [[ -z ${HOME:-} ]]; then
+    err 'HOME is not set'
+    exit 2
+  fi
+
+  if (( do_status )); then
+    for agent in "${selected[@]}"; do
+      agent_status "$agent" || failed=1
+    done
+    status_cli
+    (( failed )) && exit 2
+    exit 0
+  fi
+
+  if (( do_uninstall )); then
+    confirm_run uninstall || exit 1
+    for agent in "${selected[@]}"; do
+      agent_uninstall "$agent" || failed=1
+    done
+    if cli_still_needed; then
+      printf 'kept cli %s (other agent hooks still call it)\n' "$(cli_target)"
+    else
+      uninstall_cli || failed=1
+    fi
+  else
+    confirm_run install || exit 1
+    for agent in "${selected[@]}"; do
+      agent_install "$agent" || failed=1
+    done
+    (( failed )) || install_cli || failed=1
+    if (( ! failed && ! dry_run )); then
+      for agent in "${selected[@]}"; do
+        next_step "$agent"
+      done
+    fi
+  fi
+
+  (( failed )) && exit 2
+  exit 0
+}
+
+main "$@"

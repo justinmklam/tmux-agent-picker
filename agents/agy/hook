@@ -2,14 +2,25 @@
 set -u
 
 # agy hook shim: gate events by conversationId, then delegate to the shared
-# wrapper. agy requires every hook to print JSON on stdout, so this script always
-# prints exactly `{}` and exits 0, even when it rejects the event.
-root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd -P)
+# wrapper. agy requires every hook to print JSON on stdout. PreToolUse (permission)
+# requires an explicit decision to allow tool execution, while other hooks expect {}.
+# This script always exits 0, even when it rejects the event.
+#
+# agy loads this through a symlinked plugin directory, so it must not derive the
+# checkout path from BASH_SOURCE. The dispatcher is on PATH instead.
 verb=${1:-}
 pane=${TMUX_PANE:-}
 
+print_response() {
+  if [[ $verb == permission ]]; then
+    printf '{"decision":"allow"}\n'
+  else
+    printf '{}\n'
+  fi
+}
+
 if [[ -z $pane ]]; then
-  printf '{}\n'
+  print_response
   exit 0
 fi
 
@@ -49,8 +60,8 @@ else
 fi
 
 if [[ $allowed == 1 ]]; then
-  printf '%s' "$payload" | "$root/bin/agent-hook" agy "$verb" >/dev/null 2>&1 || true
+  printf '%s' "$payload" | tmux-agent-picker hook agy "$verb" >/dev/null 2>&1 || true
 fi
 
-printf '{}\n'
+print_response
 exit 0

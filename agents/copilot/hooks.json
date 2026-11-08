@@ -2,28 +2,28 @@
   "version": 1,
   "hooks": {
     "sessionStart": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot session", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot session", "timeoutSec": 5 }
     ],
     "userPromptSubmitted": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot prompt", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot prompt", "timeoutSec": 5 }
     ],
     "permissionRequest": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot permission", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot permission", "timeoutSec": 5 }
     ],
     "postToolUse": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot activity", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot activity", "timeoutSec": 5 }
     ],
     "postToolUseFailure": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot activity", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot activity", "timeoutSec": 5 }
     ],
     "agentStop": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot stop", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot stop", "timeoutSec": 5 }
     ],
     "errorOccurred": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot stop", "timeoutSec": 5 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot stop", "timeoutSec": 5 }
     ],
     "sessionEnd": [
-      { "type": "command", "bash": "\"${TMUX_AGENT_PICKER_ROOT:-$HOME/.tmux/plugins/tmux-agent-picker}/bin/agent-hook\" copilot end", "timeoutSec": 3 }
+      { "type": "command", "bash": "tmux-agent-picker hook copilot end", "timeoutSec": 3 }
     ]
   }
 }
