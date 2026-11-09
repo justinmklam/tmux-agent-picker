@@ -86,7 +86,8 @@ The test harness must use a private tmux server, `TMUX_TMPDIR`, and `_ZO_DATA_DI
 
 ### Picker behavior
 
-- Agent order is state tier (`blocked`, `working`, `done`, `idle`), then newest `@ap_since` within a tier.
+- Picker order puts the current pane first; every other row follows the normal state-tier (`blocked`, `working`, `done`, `idle`) and newest `@ap_since` ordering.
+- `j`/`k` and Up/Down navigation cycle from either end of the list.
 - Bare shell foreground commands (`zsh`, `bash`, `fish`, and `sh`) are hidden as stale panes.
 - Every client switch must target the client passed to the popup with `switch-client -c`.
 - Keep user paths out of fzf action text. Use fzf placeholders and its quoting for `{q}` and `{}`.

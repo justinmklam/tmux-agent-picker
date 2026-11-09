@@ -3,6 +3,8 @@ set -u
 
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SERVER=ap-test
+WRAP_SERVER=ap-wrap
+CLIENT_SCRIPT_PID=''
 TMP_ROOT=$(mktemp -d)
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
 export TMUX_TMPDIR=$(mktemp -d)
@@ -10,7 +12,9 @@ export _ZO_DATA_DIR=$(mktemp -d)
 export PATH="$ROOT/bin:$PATH"
 
 cleanup() {
+  [[ -n $CLIENT_SCRIPT_PID ]] && kill "$CLIENT_SCRIPT_PID" >/dev/null 2>&1 || true
   tmux -L "$SERVER" kill-server >/dev/null 2>&1 || true
+  tmux -L "$WRAP_SERVER" kill-server >/dev/null 2>&1 || true
   rm -rf "$TMP_ROOT" "$TMUX_TMPDIR" "$_ZO_DATA_DIR"
 }
 trap cleanup EXIT
@@ -238,6 +242,42 @@ ORDER=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk '$2 != "session" {print $
 EXPECTED=$(printf '%s,' "${ORDER_PANES[1]}" "${ORDER_PANES[0]}" "${ORDER_PANES[4]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" | sed 's/,$//')
 assert_eq "$EXPECTED" "$ORDER" '(g) orders state tiers and newest first'
 
+CURRENT_FIRST=$(TMUX_PANE="${ORDER_PANES[4]}" "$ROOT/bin/agent-pick" --list | head -n 1 | cut -f1)
+assert_eq "${ORDER_PANES[4]}" "$CURRENT_FIRST" '(g2) puts the current pane first'
+
+CURRENT_CONTEXT_SHELL=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s current-context -c "$TMP_ROOT" 'exec sh')
+CURRENT_OTHER_AGENT=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s other-context -c "$TMP_ROOT" 'exec sleep 3600')
+run_state "$CURRENT_OTHER_AGENT" set pi blocked
+CURRENT_CONTEXT_LIST=$(TMUX_PANE="$CURRENT_CONTEXT_SHELL" "$ROOT/bin/agent-pick" --list)
+assert_eq "$CURRENT_OTHER_AGENT" "$(printf '%s\n' "$CURRENT_CONTEXT_LIST" | head -n 1 | cut -f1)" \
+  '(g3) keeps normal ordering when the current pane is hidden'
+tmux_cmd kill-session -t current-context
+tmux_cmd kill-session -t other-context
+
+# Exercise the same client-qualified lookup used by the popup when a pseudo-TTY
+# is available. The private server remains isolated from the user's tmux server.
+if command -v script >/dev/null 2>&1; then
+  tmux_cmd select-pane -t "${ORDER_PANES[4]}"
+  script -q /dev/null tmux -L "$SERVER" attach-session -t ap-test >/dev/null 2>&1 &
+  CLIENT_SCRIPT_PID=$!
+  CLIENT_NAME=''
+  for _ in $(seq 1 100); do
+    CLIENT_NAME=$(tmux_cmd list-clients -F '#{client_name}' 2>/dev/null | head -n 1 || true)
+    [[ -n $CLIENT_NAME ]] && break
+    sleep 0.05
+  done
+  [[ -n $CLIENT_NAME ]] || fail '(g4) private client did not attach'
+  tmux_cmd switch-client -c "$CLIENT_NAME" -t "${ORDER_PANES[4]}"
+  CLIENT_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list --client "$CLIENT_NAME")
+  assert_eq "${ORDER_PANES[4]}" "$(printf '%s\n' "$CLIENT_LIST" | head -n 1 | cut -f1)" \
+    '(g4) client lookup puts the active pane first'
+  tmux_cmd detach-client -t "$CLIENT_NAME" >/dev/null 2>&1 || true
+  kill "$CLIENT_SCRIPT_PID" >/dev/null 2>&1 || true
+  CLIENT_SCRIPT_PID=''
+else
+  ok '(g4) script unavailable, client lookup requires manual verification'
+fi
+
 # (h) bare shells are stale and hidden.
 SHELL_PANE=$(new_pane shell 'exec sh')
 for _ in $(seq 1 100); do
@@ -372,7 +412,16 @@ ok '(o) footer advertises the kill key'
 DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -c "$TMP_ROOT" 'exec sleep 3600')
 run_state "$DOOMED_PANE" set pi blocked
 tmux_cmd set-option -pt "$DOOMED_PANE" @ap_since "$(date +%s)"
-KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-killer "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+script -q /dev/null tmux -L "$SERVER" attach-session -t doomed >/dev/null 2>&1 &
+CLIENT_SCRIPT_PID=$!
+DOOMED_CLIENT=''
+for _ in $(seq 1 100); do
+  DOOMED_CLIENT=$(tmux_cmd list-clients -F '#{client_name}' 2>/dev/null | head -n 1 || true)
+  [[ -n $DOOMED_CLIENT ]] && break
+  sleep 0.05
+done
+[[ -n $DOOMED_CLIENT ]] || fail '(o2) doomed client did not attach'
+KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-killer "exec \"$INSTALL_ROOT/bin/agent-pick\" --client \"$DOOMED_CLIENT\"")
 wait_for "$KILLER" 'Enter go' || fail '(o2) killer picker did not start'
 FIRST_ROW=$(tmux_cmd capture-pane -p -t "$KILLER" | grep -E 'blocked[[:space:]]+pi|session[[:space:]]' | head -n 1)
 [[ $FIRST_ROW == *doomed* ]] || {
@@ -395,6 +444,7 @@ for i in $(seq 1 100); do
   sleep 0.05
 done
 assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true)" '(o2) confirmation kills the session'
+CLIENT_SCRIPT_PID=''
 wait_for_normal "$KILLER" || fail '(o2) picker stays open after killing'
 for i in $(seq 1 100); do
   SCREEN=$(tmux_cmd capture-pane -p -t "$KILLER")
@@ -472,6 +522,45 @@ assert_eq "$(picker_rows "$PICKER" | head -n 1)" "$(picker_focused_row "$PICKER"
 tmux_cmd send-keys -t "$PICKER" Escape
 tmux_cmd send-keys -t "$PICKER" Escape
 
+# Verify boundary wrapping with a small isolated list so viewport scrolling does
+# not confuse the visual first and last rows.
+tmux -L "$WRAP_SERVER" -f /dev/null new-session -d -s ap-wrap -c "$TMP_ROOT" 'exec sleep 3600'
+WRAP_INFO=$(tmux -L "$WRAP_SERVER" display-message -p '#{socket_path},#{pid},0')
+OLD_SERVER=$SERVER
+OLD_TMUX=$TMUX
+SERVER=$WRAP_SERVER
+export TMUX=$WRAP_INFO
+WRAP_A=$(tmux_cmd display-message -p -t ap-wrap '#{pane_id}')
+WRAP_B=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-wrap: -n wrap-b 'exec sleep 3600')
+WRAP_C=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-wrap: -n wrap-c 'exec sleep 3600')
+run_state "$WRAP_A" set pi blocked
+run_state "$WRAP_B" set pi working
+run_state "$WRAP_C" set pi done
+WRAP_PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-wrap: -n wrap-picker "exec \"$ROOT/bin/agent-pick\"")
+wait_for_normal "$WRAP_PICKER" || fail '(u2) wrap picker did not start'
+WRAP_FIRST=$(picker_rows "$WRAP_PICKER" | head -n 1)
+WRAP_LAST=$(picker_rows "$WRAP_PICKER" | tail -n 1)
+assert_eq "$WRAP_FIRST" "$(picker_focused_row "$WRAP_PICKER")" '(u2) starts at the first row'
+tmux_cmd send-keys -t "$WRAP_PICKER" j
+sleep 0.1
+tmux_cmd send-keys -t "$WRAP_PICKER" j
+sleep 0.1
+tmux_cmd send-keys -t "$WRAP_PICKER" j
+sleep 0.3
+assert_eq "$WRAP_FIRST" "$(picker_focused_row "$WRAP_PICKER")" '(u2) j wraps from the bottom'
+tmux_cmd send-keys -t "$WRAP_PICKER" k
+sleep 0.3
+assert_eq "$WRAP_LAST" "$(picker_focused_row "$WRAP_PICKER")" '(u2) k wraps from the top'
+tmux_cmd send-keys -t "$WRAP_PICKER" Down
+sleep 0.3
+assert_eq "$WRAP_FIRST" "$(picker_focused_row "$WRAP_PICKER")" '(u2) Down wraps from the bottom'
+tmux_cmd send-keys -t "$WRAP_PICKER" Up
+sleep 0.3
+assert_eq "$WRAP_LAST" "$(picker_focused_row "$WRAP_PICKER")" '(u2) Up wraps from the top'
+tmux_cmd send-keys -t "$WRAP_PICKER" q
+SERVER=$OLD_SERVER
+export TMUX=$OLD_TMUX
+
 # The preview follows the bottom of the pane, so the newest output is visible
 # without scrolling to it first. The agent pane is taller than the preview
 # window so the top and bottom markers cannot both fit.
@@ -483,7 +572,7 @@ PREVIEW_LOG="$TMP_ROOT/preview-lines"
 } >"$PREVIEW_LOG"
 PREVIEW_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -x 100 -y 80 -s ap-preview-scroll -c "$TMP_ROOT" "cat '$PREVIEW_LOG'; exec sleep 3600")
 run_state "$PREVIEW_PANE" set pi blocked
-PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-picker-preview "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-picker-preview "TMUX_PANE=$PREVIEW_PANE exec \"$INSTALL_ROOT/bin/agent-pick\"")
 wait_for_normal "$PICKER" || fail '(u2) preview picker did not start'
 sleep 0.5
 PREVIEW_SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")

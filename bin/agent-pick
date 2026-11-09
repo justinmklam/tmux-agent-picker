@@ -149,8 +149,9 @@ active_pane_for_session() {
 }
 
 list_agents() {
+  local current_pane=${1:-${TMUX_PANE:-}}
   local pane state since agent session session_id window pane_index command title pid
-  local tier age display
+  local tier age display current_rank
   local session_pane sessions_with_agents=''
   local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}'
   {
@@ -158,13 +159,15 @@ list_agents() {
     NOW=$(date +%s)
     while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid; do
       [[ -n $pane ]] || continue
+      current_rank=1
+      [[ -n $current_pane && $pane == "$current_pane" ]] && current_rank=0
       # A pane without state may still be an agent: detected agents cannot
       # report working, blocked, or done, so they enter the idle tier.
       if [[ -z $state ]]; then
         detect_agent_for_pane "$pid" "$command"
         if [[ -n $DETECTED_AGENT ]]; then
           display="idle"$'\t'"$DETECTED_AGENT"$'\t'"$session:$window.$pane_index"$'\t'"-"$'\t'"$title"
-          printf '3\t0\t%s\t%s\t%s\n' "$pane" "$pane" "$display"
+          printf '%s\t3\t0\t%s\t%s\t%s\n' "$current_rank" "$pane" "$pane" "$display"
           sessions_with_agents+=" $session_id"
           continue
         fi
@@ -181,7 +184,7 @@ list_agents() {
       esac
       age=$(age_for "$since")
       display="$state"$'\t'"$agent"$'\t'"$session:$window.$pane_index"$'\t'"$age"$'\t'"$title"
-      printf '%s\t%s\t%s\t%s\t%s\n' "$tier" "${since:-0}" "$pane" "$pane" "$display"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$current_rank" "$tier" "${since:-0}" "$pane" "$pane" "$display"
       sessions_with_agents+=" $session_id"
     done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
 
@@ -192,25 +195,26 @@ list_agents() {
       esac
       session_pane=$(active_pane_for_session "$session_id")
       [[ -n $session_pane ]] || continue
-      printf '4\t0\t%s\t%s\tsession %s\n' "$session_name" "$session_pane" "$session_name"
+      current_rank=1
+      printf '%s\t4\t0\t%s\t%s\tsession %s\n' "$current_rank" "$session_name" "$session_pane" "$session_name"
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
-    LC_ALL=C sort -t $'\t' -k1,1n -k2,2nr -k3,3 -k4,4 |
+    LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5 |
     awk -F '\t' '
       {
-        pane[NR] = $4
-        if (NF >= 9) {
+        pane[NR] = $5
+        if (NF >= 10) {
           agent_row[NR] = 1
-          state[NR] = $5
-          agent[NR] = $6
-          location[NR] = $7
-          age[NR] = $8
-          title[NR] = $9
-          for (i = 10; i <= NF; i++) title[NR] = title[NR] OFS $i
+          state[NR] = $6
+          agent[NR] = $7
+          location[NR] = $8
+          age[NR] = $9
+          title[NR] = $10
+          for (i = 11; i <= NF; i++) title[NR] = title[NR] OFS $i
           if (length(agent[NR]) > max_agent) max_agent = length(agent[NR])
           if (length(location[NR]) > max_location) max_location = length(location[NR])
         } else {
-          display[NR] = $5
+          display[NR] = $6
         }
       }
       END {
@@ -283,6 +287,15 @@ current_session_id() {
   fi
 }
 
+current_pane_for_client() {
+  local client=${1:-}
+  if [[ -n $client ]]; then
+    "$TMUX_BIN" display-message -p -t "$client" '#{pane_id}' 2>/dev/null || true
+  else
+    printf '%s' "${TMUX_PANE:-}"
+  fi
+}
+
 # Kill the session owning the pane under the cursor. Always returns 0: it runs
 # from an fzf binding that continues with a reload.
 kill_session_for_pane() {
@@ -322,7 +335,7 @@ kill_session_for_pane() {
 }
 
 coloured_agents() {
-  list_agents | colour_agents
+  list_agents "${1:-}" | colour_agents
 }
 
 go_to_pane() {
@@ -335,23 +348,24 @@ go_to_pane() {
 }
 
 interactive() {
-  local client=${1:-} client_q agents footer theme root_q fzf_colors=()
+  local client=${1:-} client_q agents footer theme root_q current_pane fzf_colors=()
   client_q=$(client_quote "$client")
   root_q=$(printf '%q' "$ROOT")
-  agents=$(list_agents)
+  current_pane=$(current_pane_for_client "$client")
+  agents=$(list_agents "$current_pane")
   footer=$NORMAL_FOOTER
   has_agent_rows "$agents" || footer=$EMPTY_FOOTER
   theme=$(theme_option @ap_fzf_colors)
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
-    --ansi --delimiter=$'\t' --with-nth=2.. --tiebreak=index --reverse \
+    --ansi --delimiter=$'\t' --with-nth=2.. --tiebreak=index --reverse --cycle \
     "${fzf_colors[@]}" \
     --with-shell 'bash -c' --no-input --footer "$footer" \
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='right:50%,follow' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
-    --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows)" \
+    --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows --client $client_q)" \
     --bind "/:show-input+unbind(n,x,/,j,k)+change-footer($FILTER_FOOTER)" \
     --bind 'j:down,k:up' \
     --bind 'change:first' \
@@ -363,10 +377,16 @@ interactive() {
 
 case "${1:-}" in
   --list)
-    list_agents
+    shift
+    client=''
+    [[ ${1:-} == --client ]] && client=${2:-}
+    list_agents "$(current_pane_for_client "$client")"
     ;;
   --rows)
-    coloured_agents
+    shift
+    client=''
+    [[ ${1:-} == --client ]] && client=${2:-}
+    coloured_agents "$(current_pane_for_client "$client")"
     ;;
   --kill)
     kill_session_for_pane "${2:-}"

@@ -67,7 +67,7 @@ The four states tell you:
 - **`done`** — the agent finished a turn and needs your attention.
 - **`idle`** — the agent is not running, or you have already looked at a finished agent.
 
-Agent ordering is state tier (`blocked`, `working`, `done`, `idle`), then newest `@ap_since` within a tier. Sessions without a visible stateful agent pane appear once as `session <name>` rows after the agent rows; selecting one switches to that session's active pane.
+Agent ordering puts the pane currently active in the client that opened the picker first. Every other row uses the normal state tier (`blocked`, `working`, `done`, `idle`), then newest `@ap_since` within a tier. Sessions without a visible stateful agent pane appear once as `session <name>` rows after the agent rows; selecting one switches to that session's active pane.
 
 The picker hides panes whose foreground command is a bare shell (`zsh`, `bash`, `fish`, or `sh`). This removes stale agent rows after an agent exits without reporting `clear`; ordinary sessions are listed regardless of what their panes are running. A pane running another program can still retain stale state until you clear it.
 
@@ -100,7 +100,8 @@ Which lifecycle events an integration should report is documented in [AGENT_SUPP
 - Every client switch targets the client passed to the popup with `switch-client -c`.
 - User paths stay out of fzf action text; the picker uses fzf placeholders and its quoting for `{q}` and `{}`.
 - Picker transitions use `exec fzf` and process substitution so no waiting shells are left behind.
-- Agent order is state tier, then newest `@ap_since`.
+- Agent order puts the current client pane first; every other row uses the normal state tier and newest `@ap_since` ordering.
+- `j`/`k` and Up/Down navigation wrap from either end of the list.
 - A changed query restarts the cursor at the first row (`change:first`) so filtering never keeps a stale cursor position.
 - The list reloads after an action without closing the picker.
 
@@ -109,7 +110,7 @@ Keys:
 | Key | Action |
 | --- | --- |
 | `Enter` | Go to the selected agent or session. |
-| `j` / `k` | Move the cursor down / up. |
+| `j` / `k` or Up/Down | Move the cursor down / up; navigation wraps at either end. |
 | `n` | Open the directory picker and switch to or create that session. |
 | `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. The session running the picker is refused so the popup cannot destroy itself. |
 | `/` | Enter filter mode; `n` and `x` type normally there. Typing restarts the cursor at the first row. |
