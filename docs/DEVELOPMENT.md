@@ -99,6 +99,7 @@ Which lifecycle events an integration should report is documented in [AGENT_SUPP
 
 - Every client switch targets the client passed to the popup with `switch-client -c`.
 - User paths stay out of fzf action text; the picker uses fzf placeholders and its quoting for `{q}` and `{}`.
+- Every row leads with the target pane id and a row kind (`agent` or `session`) that `--with-nth` keeps off the display, so the kill bindings can tell an agent pane from a session placeholder.
 - Picker transitions use `exec fzf` and process substitution so no waiting shells are left behind.
 - Agent order is state tier, then newest `@ap_since`.
 - A changed query restarts the cursor at the first row (`change:first`) so filtering never keeps a stale cursor position.
@@ -111,11 +112,12 @@ Keys:
 | `Enter` | Go to the selected agent or session. |
 | `j` / `k` | Move the cursor down / up. |
 | `n` | Open the directory picker and switch to or create that session. |
-| `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. The session running the picker is refused so the popup cannot destroy itself. |
-| `/` | Enter filter mode; `n` and `x` type normally there. Typing restarts the cursor at the first row. |
+| `x` | Kill the pane under the cursor. The prompt reads `kill pane <session>:<window>.<pane>? [y/N]`; only `y` or `Y` kills it. On a session row (a session with no agent pane) it kills that session instead. The picker refuses the pane it runs on: its own pane, or inside a popup the pane the client is on, since `TMUX_PANE` is empty there. |
+| `X` | Kill the session owning the row under the cursor, whatever the row kind. The prompt reads `kill session <name>? [y/N]`; the session running the picker is refused. |
+| `/` | Enter filter mode; `n`, `x`, and `X` type normally there. Typing restarts the cursor at the first row. |
 | `q` / `Esc` | Close the picker. `Esc` first clears the query and leaves filter mode. |
 
-Killing a session terminates every window and pane in it, including unsaved work. The list reloads afterwards and keeps the picker open.
+A pane kill takes only that pane; tmux removes the window when it was the last pane and the session when it was the last window, so a one-agent session disappears in full. A session kill terminates every window and pane in it, including unsaved work. The list reloads afterwards and keeps the picker open.
 
 The directory picker (`n`) lists zoxide directories, switches to a session whose path matches the selection, and otherwise creates a session named after the directory, adding `-2`, `-3`, … on name collisions. `Esc` returns to the agent picker. The picker does not remove directories from zoxide; run `zoxide remove <directory>` yourself.
 

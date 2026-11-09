@@ -8,7 +8,7 @@ Press `prefix + a` for a list of agent panes sorted by who needs you first: bloc
 
 - **See what needs attention** — state, agent, session, and age in one line per agent.
 - **Jump straight to the work** — selecting a row switches your client to that pane and window.
-- **Filter or clean up** — `/` filters, `x` kills the session under the cursor.
+- **Filter or clean up** — `/` filters, `x` kills the pane under the cursor, `X` kills its whole session.
 - **Any agent** — pi reports state out of the box; other agents are detected from their process, and any agent can report state with a single command.
 
 ## Supported agents

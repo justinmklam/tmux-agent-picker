@@ -299,6 +299,9 @@ OPENED=$("$ROOT/bin/agent-new" --open "$TMP_ROOT/x/proj") || fail '(n) opens exa
 assert_eq proj "$OPENED" '(n) uses exact session-name check'
 
 # (o)-(s) modal picker behavior.
+# Detection is covered by (v); switching it off keeps every picker reload in
+# these sections free of a full process-table scan.
+tmux_cmd set-option -g @ap_detect_agents off
 tmux_cmd set-option -g remain-on-exit on
 for pane in "${ORDER_PANES[@]}" "$SHELL_PANE"; do
   run_state "$pane" clear
@@ -365,57 +368,131 @@ assert_eq 'blocked,blocked,working,done,idle' "$ORDER" '(o) preserves computed r
 ok '(o) shows ordered agent rows'
 [[ $SCREEN != *'type to filter'* ]] || fail '(o) hides input in normal mode'
 ok '(o) hides input in normal mode'
+# Widen the window so the footer is not clipped by the 50% preview pane.
+tmux_cmd resize-window -t "$PICKER" -x 200 -y 30
+wait_for "$PICKER" 'X kill session' || fail '(o) footer does not advertise both kill keys'
+SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
 [[ $SCREEN == *'x kill'* ]] || fail '(o) footer advertises the kill key'
-ok '(o) footer advertises the kill key'
+[[ $SCREEN == *'X kill session'* ]] || fail '(o) footer advertises the session kill key'
+ok '(o) footer advertises the kill keys'
 
-# (o2) x kills the session under the cursor only after y/N confirmation.
-DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -c "$TMP_ROOT" 'exec sleep 3600')
-run_state "$DOOMED_PANE" set pi blocked
-tmux_cmd set-option -pt "$DOOMED_PANE" @ap_since "$(date +%s)"
+# (o2) x kills the pane under the cursor, not the whole session. The leftover
+# plain sessions from earlier sections keep the list short enough to navigate.
+tmux_cmd kill-session -t proj
+tmux_cmd kill-session -t proj-2
+tmux_cmd kill-session -t my_app
+tmux_cmd kill-session -t projector
+PAIR_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s pair -c "$TMP_ROOT" 'exec sleep 3600')
+PAIR_SIBLING=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t pair: -n pair-second 'exec sleep 3600')
+PLAIN_KILL=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s plainkill -c "$TMP_ROOT" 'exec sleep 3600')
+now_kill=$(date +%s)
+run_state "$PAIR_PANE" set pi blocked
+run_state "$PAIR_SIBLING" set pi blocked
+tmux_cmd set-option -pt "$PAIR_PANE" @ap_since $((now_kill - 2))
+tmux_cmd set-option -pt "$PAIR_SIBLING" @ap_since $((now_kill - 1))
+ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows)
+assert_eq agent "$(printf '%s\n' "$ROWS" | awk -F '\t' -v p="$PAIR_PANE" '$1 == p { print $2 }')" '(o2) marks an agent row'
+assert_eq session "$(printf '%s\n' "$ROWS" | awk -F '\t' -v p="$PLAIN_KILL" '$1 == p { print $2 }')" '(o2) marks a session row'
+
 KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-killer "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 wait_for "$KILLER" 'Enter go' || fail '(o2) killer picker did not start'
-FIRST_ROW=$(tmux_cmd capture-pane -p -t "$KILLER" | grep -E 'blocked[[:space:]]+pi|session[[:space:]]' | head -n 1)
-[[ $FIRST_ROW == *doomed* ]] || {
+FIRST_ROW=$(picker_rows "$KILLER" | head -n 1)
+[[ $FIRST_ROW == *'pair:1.0'* ]] || {
   printf '%s\n' "$FIRST_ROW" >&2
   fail '(o2) newest blocked row sorts first'
 }
 tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts before killing'
-ok '(o2) x prompts before killing'
+wait_for "$KILLER" 'kill pane pair:1.0? [y/N]' || fail '(o2) x prompts for the pane'
+ok '(o2) x prompts for the pane'
 tmux_cmd send-keys -t "$KILLER" n
 wait_for_normal "$KILLER" || fail '(o2) declining returns to the picker'
-[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true) ]] || fail '(o2) declining keeps the session'
-ok '(o2) declining keeps the session'
+assert_eq 2 "$(tmux_cmd list-panes -s -t pair -F '#{pane_id}' | wc -l | tr -d ' ')" '(o2) declining keeps both panes'
 
 tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts again after declining'
+wait_for "$KILLER" 'kill pane pair:1.0? [y/N]' || fail '(o2) x prompts again after declining'
 tmux_cmd send-keys -t "$KILLER" y
 for i in $(seq 1 100); do
-  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true) ]] && break
+  [[ -z $(tmux_cmd list-panes -s -t pair -F '#{pane_id}' | grep -x -- "$PAIR_SIBLING" || true) ]] && break
   sleep 0.05
 done
-assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true)" '(o2) confirmation kills the session'
+assert_eq '' "$(tmux_cmd list-panes -s -t pair -F '#{pane_id}' | grep -x -- "$PAIR_SIBLING" || true)" '(o2) confirmation kills the selected pane'
+assert_eq "$PAIR_PANE" "$(tmux_cmd list-panes -s -t pair -F '#{pane_id}')" '(o2) leaves the sibling pane alive'
+[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- pair || true) ]] || fail '(o2) leaves the session alive'
+ok '(o2) leaves the session alive'
 wait_for_normal "$KILLER" || fail '(o2) picker stays open after killing'
 for i in $(seq 1 100); do
   SCREEN=$(tmux_cmd capture-pane -p -t "$KILLER")
-  [[ $SCREEN != *doomed* ]] && break
+  [[ $SCREEN != *'pair:1.0'* ]] && break
   sleep 0.05
 done
-[[ $SCREEN != *doomed* ]] || {
+[[ $SCREEN != *'pair:1.0'* ]] || {
   printf '%s\n' "$SCREEN" >&2
-  fail '(o2) reload drops the killed session row'
+  fail '(o2) reload drops the killed pane row'
 }
-ok '(o2) reload drops the killed session row'
+ok '(o2) reload drops the killed pane row'
 
-# (o3) the session running the picker is protected from the kill key.
+# (o3) X kills the session under the cursor whatever the row kind is.
+tmux_cmd send-keys -t "$KILLER" X
+wait_for "$KILLER" 'kill session pair? [y/N]' || fail '(o3) X prompts for the session'
+ok '(o3) X prompts for the session'
+tmux_cmd send-keys -t "$KILLER" y
+for i in $(seq 1 100); do
+  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- pair || true) ]] && break
+  sleep 0.05
+done
+assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- pair || true)" '(o3) X kills the session'
+wait_for_normal "$KILLER" || fail '(o3) picker stays open after killing the session'
+ok '(o3) picker stays open after killing the session'
+
+# (o4) x on a session row kills that session instead of its active pane. The
+# reload after a declined prompt picks up the plain session created above.
 tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'refusing to kill the current session' || fail '(o3) refuses to kill the current session'
-ok '(o3) refuses to kill the current session'
+wait_for "$KILLER" 'kill pane ' || fail '(o4) x prompts before the reload'
+tmux_cmd send-keys -t "$KILLER" n
+wait_for_normal "$KILLER" || fail '(o4) declining returns to the picker'
+tmux_cmd send-keys -t "$KILLER" -N 40 j
+for i in $(seq 1 100); do
+  FOCUSED=$(picker_focused_row "$KILLER")
+  [[ $FOCUSED == *'session plainkill'* ]] && break
+  sleep 0.05
+done
+[[ $FOCUSED == *'session plainkill'* ]] || {
+  printf '%s\n' "$FOCUSED" >&2
+  fail '(o4) moves the cursor to the session row'
+}
+tmux_cmd send-keys -t "$KILLER" x
+wait_for "$KILLER" 'kill session plainkill? [y/N]' || fail '(o4) x kills the session on a session row'
+ok '(o4) x kills the session on a session row'
+tmux_cmd send-keys -t "$KILLER" y
+for i in $(seq 1 100); do
+  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- plainkill || true) ]] && break
+  sleep 0.05
+done
+assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- plainkill || true)" '(o4) confirmation kills the session'
+wait_for_normal "$KILLER" || fail '(o4) picker stays open after killing the session'
+
+# (o5) a pane holding the picker is protected from a pane kill.
+SELF_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-self "exec \"$INSTALL_ROOT/bin/agent-pick\" --kill \"\$TMUX_PANE\" agent; exec sleep 3600")
+wait_for "$SELF_PANE" 'refusing to kill the current pane' || fail '(o5) refuses to kill the current pane'
+ok '(o5) refuses to kill the current pane'
+tmux_cmd send-keys -t "$SELF_PANE" z
+assert_eq "$SELF_PANE" "$(tmux_cmd list-panes -a -F '#{pane_id}' | grep -x -- "$SELF_PANE")" '(o5) keeps the current pane'
+
+# (o6) the session running the picker is protected from a session kill.
+FOCUSED=$(picker_focused_row "$KILLER")
+[[ $FOCUSED == *'ap-test:'* ]] || {
+  printf '%s\n' "$FOCUSED" >&2
+  fail '(o6) cursor resets to an ap-test row after a reload'
+}
+tmux_cmd send-keys -t "$KILLER" X
+wait_for "$KILLER" 'refusing to kill the current session' || fail '(o6) refuses to kill the current session'
+ok '(o6) refuses to kill the current session'
 tmux_cmd send-keys -t "$KILLER" z
-wait_for_normal "$KILLER" || fail '(o3) returns to the picker after refusing'
-[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- ap-test || true) ]] || fail '(o3) keeps the current session'
-ok '(o3) keeps the current session'
+wait_for_normal "$KILLER" || fail '(o6) returns to the picker after refusing'
+[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- ap-test || true) ]] || fail '(o6) keeps the current session'
+ok '(o6) keeps the current session'
 tmux_cmd send-keys -t "$KILLER" q
+tmux_cmd set-option -gu @ap_detect_agents
 
 tmux_cmd send-keys -t "$PICKER" /
 wait_for "$PICKER" 'type to filter' || fail '(p) filter mode did not open'

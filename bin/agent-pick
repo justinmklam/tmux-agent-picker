@@ -3,9 +3,10 @@ set -u
 
 TMUX_BIN=${TMUX_BIN:-tmux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-NORMAL_FOOTER='Enter go  n new session  x kill session  / filter  j/k move  q/Esc close'
+NORMAL_FOOTER='Enter go  n new session  x kill  X kill session  / filter  j/k  q/Esc close'
 FILTER_FOOTER='type to filter  Enter go  Esc back'
 EMPTY_FOOTER='no agents — Enter go  n new session  / filter  j/k move  q/Esc close'
+KILL_KEYS='n,x,X,/,j,k'
 
 theme_option() {
   "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
@@ -236,11 +237,17 @@ has_agent_rows() {
 }
 
 colour_agents() {
-  local pane display state colour rest
+  local pane display state colour rest kind
   while IFS=$'\t' read -r pane display; do
     [[ -n $pane ]] || continue
     state=${display%%[[:space:]]*}
     rest=${display#*[[:space:]]}
+    # The kind travels with the row so the kill key knows whether the cursor is
+    # on an agent pane or on a session that only appears as a placeholder.
+    case "$state" in
+      blocked|done|idle|working) kind=agent ;;
+      *) kind=session ;;
+    esac
     case "$state" in
       blocked) colour='\033[31m' ;;
       done) colour='\033[32m' ;;
@@ -248,7 +255,7 @@ colour_agents() {
       working) colour='\033[33m' ;;
       *) colour='' ;;
     esac
-    printf '%s\t%b%s\033[0m\t%s\n' "$pane" "$colour" "$state" "$rest"
+    printf '%s\t%s\t%b%s\033[0m\t%s\n' "$pane" "$kind" "$colour" "$state" "$rest"
   done
 }
 
@@ -283,10 +290,69 @@ current_session_id() {
   fi
 }
 
+# The pane the picker runs on. A kill key must never destroy it. Inside a
+# display-popup TMUX_PANE is empty, so fall back to the client's pane, which is
+# the pane the popup covers.
+current_pane_id() {
+  local pane=${TMUX_PANE:-}
+  [[ -n $pane ]] || pane=$("$TMUX_BIN" display-message -p '#{pane_id}' 2>/dev/null || true)
+  printf '%s' "$pane"
+}
+
+pane_location() {
+  "$TMUX_BIN" display-message -p -t "${1:-}" '#{session_name}:#{window_index}.#{pane_index}' 2>/dev/null || true
+}
+
+# Prompt on the picker's terminal. Anything other than y or Y cancels, so both
+# kill commands stay silent when the user declines.
+confirm_kill() {
+  local format=$1 answer
+  shift
+  tty_write "$format" "$@"
+  answer=$(read_tty_key)
+  case "$answer" in
+    y | Y) return 0 ;;
+  esac
+  tty_write '\ncancelled\n'
+  return 1
+}
+
+report_and_pause() {
+  tty_write "$@"
+  tty_write 'press any key to return'
+  read_tty_key >/dev/null
+}
+
+# Kill the pane under the cursor. Always returns 0: it runs from an fzf binding
+# that continues with a reload.
+kill_pane_for_pane() {
+  local pane=${1:-} current location
+  [[ -n $pane ]] || return 0
+  location=$(pane_location "$pane")
+  if [[ -z $location ]]; then
+    tty_write 'agent-picker: no such pane: %s\n' "$pane"
+    return 0
+  fi
+
+  current=$(current_pane_id)
+  if [[ -n $current && $pane == "$current" ]]; then
+    report_and_pause 'agent-picker: refusing to kill the current pane (%s)\n' "$location"
+    return 0
+  fi
+
+  confirm_kill 'kill pane %s? [y/N] ' "$location" || return 0
+  if "$TMUX_BIN" kill-pane -t "$pane" >/dev/null 2>&1; then
+    tty_write '\nkilled pane %s\n' "$location"
+  else
+    report_and_pause '\nagent-picker: could not kill pane %s\n' "$location"
+  fi
+  return 0
+}
+
 # Kill the session owning the pane under the cursor. Always returns 0: it runs
 # from an fzf binding that continues with a reload.
 kill_session_for_pane() {
-  local pane=${1:-} session_id session_name current answer
+  local pane=${1:-} session_id session_name current
   [[ -n $pane ]] || return 0
   session_id=$(session_id_for_pane "$pane")
   [[ -n $session_id ]] || return 0
@@ -295,28 +361,15 @@ kill_session_for_pane() {
 
   current=$(current_session_id)
   if [[ -n $current && $session_id == "$current" ]]; then
-    tty_write 'agent-picker: refusing to kill the current session (%s)\n' "$session_name"
-    tty_write 'press any key to return'
-    read_tty_key >/dev/null
+    report_and_pause 'agent-picker: refusing to kill the current session (%s)\n' "$session_name"
     return 0
   fi
 
-  tty_write 'kill session %s? [y/N] ' "$session_name"
-  answer=$(read_tty_key)
-  case "$answer" in
-    y | Y) ;;
-    *)
-      tty_write '\ncancelled\n'
-      return 0
-      ;;
-  esac
-
+  confirm_kill 'kill session %s? [y/N] ' "$session_name" || return 0
   if "$TMUX_BIN" kill-session -t "$session_id" >/dev/null 2>&1; then
     tty_write '\nkilled session %s\n' "$session_name"
   else
-    tty_write '\nagent-picker: could not kill session %s\n' "$session_name"
-    tty_write 'press any key to return'
-    read_tty_key >/dev/null
+    report_and_pause '\nagent-picker: could not kill session %s\n' "$session_name"
   fi
   return 0
 }
@@ -345,18 +398,19 @@ interactive() {
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
-    --ansi --delimiter=$'\t' --with-nth=2.. --tiebreak=index --reverse \
+    --ansi --delimiter=$'\t' --with-nth=3.. --tiebreak=index --reverse \
     "${fzf_colors[@]}" \
     --with-shell 'bash -c' --no-input --footer "$footer" \
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='right:50%,follow' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
-    --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows)" \
-    --bind "/:show-input+unbind(n,x,/,j,k)+change-footer($FILTER_FOOTER)" \
+    --bind "x:execute($root_q/bin/agent-pick --kill {1} {2})+reload($root_q/bin/agent-pick --rows)" \
+    --bind "X:execute($root_q/bin/agent-pick --kill-session {1})+reload($root_q/bin/agent-pick --rows)" \
+    --bind "/:show-input+unbind($KILL_KEYS)+change-footer($FILTER_FOOTER)" \
     --bind 'j:down,k:up' \
     --bind 'change:first' \
     --bind 'q:abort' \
-    --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind(n,x,/,j,k)+change-footer($footer)'; else echo abort; fi" \
+    --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind($KILL_KEYS)+change-footer($footer)'; else echo abort; fi" \
     --bind "enter:become($root_q/bin/agent-pick --go {1} --client $client_q)" \
     < <(colour_agents <<< "$agents")
 }
@@ -369,6 +423,12 @@ case "${1:-}" in
     coloured_agents
     ;;
   --kill)
+    case "${3:-agent}" in
+      session) kill_session_for_pane "${2:-}" ;;
+      *) kill_pane_for_pane "${2:-}" ;;
+    esac
+    ;;
+  --kill-session)
     kill_session_for_pane "${2:-}"
     ;;
   --go)
