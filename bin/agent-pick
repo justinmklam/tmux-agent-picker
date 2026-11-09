@@ -22,6 +22,7 @@ PROC_PIDS=''
 PROC_PARENT=()
 PROC_COMMAND=()
 PROC_PARENTS=''
+SESSION_COLOURS=()
 NOW=0
 
 age_for() {
@@ -149,7 +150,7 @@ active_pane_for_session() {
 }
 
 list_agents() {
-  local current_pane=${1:-${TMUX_PANE:-}}
+  local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0}
   local pane state since agent session session_id window pane_index command title pid
   local tier age display current_rank
   local session_pane sessions_with_agents=''
@@ -167,7 +168,7 @@ list_agents() {
         detect_agent_for_pane "$pid" "$command"
         if [[ -n $DETECTED_AGENT ]]; then
           display="idle"$'\t'"$DETECTED_AGENT"$'\t'"$session:$window.$pane_index"$'\t'"-"$'\t'"$title"
-          printf '%s\t3\t0\t%s\t%s\t%s\n' "$current_rank" "$pane" "$pane" "$display"
+          printf '%s\t3\t0\t%s\t%s\t%s\t%s\n' "$current_rank" "$pane" "$pane" "$session" "$display"
           sessions_with_agents+=" $session_id"
           continue
         fi
@@ -184,7 +185,7 @@ list_agents() {
       esac
       age=$(age_for "$since")
       display="$state"$'\t'"$agent"$'\t'"$session:$window.$pane_index"$'\t'"$age"$'\t'"$title"
-      printf '%s\t%s\t%s\t%s\t%s\t%s\n' "$current_rank" "$tier" "${since:-0}" "$pane" "$pane" "$display"
+      printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$current_rank" "$tier" "${since:-0}" "$pane" "$pane" "$session" "$display"
       sessions_with_agents+=" $session_id"
     done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
 
@@ -196,31 +197,39 @@ list_agents() {
       session_pane=$(active_pane_for_session "$session_id")
       [[ -n $session_pane ]] || continue
       current_rank=1
-      printf '%s\t4\t0\t%s\t%s\tsession %s\n' "$current_rank" "$session_name" "$session_pane" "$session_name"
+      printf '%s\t4\t0\t%s\t%s\t%s\tsession %s\n' "$current_rank" "$session_pane" "$session_pane" "$session_name" "$session_name"
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
     LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5 |
-    awk -F '\t' '
+    awk -v metadata="$metadata" -F '\t' '
       {
         pane[NR] = $5
+        session_name[NR] = $6
         if (NF >= 10) {
           agent_row[NR] = 1
-          state[NR] = $6
-          agent[NR] = $7
-          location[NR] = $8
-          age[NR] = $9
-          title[NR] = $10
-          for (i = 11; i <= NF; i++) title[NR] = title[NR] OFS $i
+          state[NR] = $7
+          agent[NR] = $8
+          location[NR] = $9
+          age[NR] = $10
+          title[NR] = $11
+          for (i = 12; i <= NF; i++) title[NR] = title[NR] OFS $i
           if (length(agent[NR]) > max_agent) max_agent = length(agent[NR])
           if (length(location[NR]) > max_location) max_location = length(location[NR])
         } else {
-          display[NR] = $6
+          display[NR] = $7
         }
       }
       END {
         for (i = 1; i <= NR; i++) {
           if (agent_row[i]) {
-            printf "%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
+            if (metadata) {
+              marked_location = sprintf("%c%s%c%s", 30, session_name[i], 31, substr(location[i], length(session_name[i]) + 1))
+              printf "%s\t%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], session_name[i], state[i], max_agent, agent[i], max_location + 2, marked_location, age[i], title[i]
+            } else {
+              printf "%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
+            }
+          } else if (metadata) {
+            printf "%s\t%s\tsession %c%s%c\n", pane[i], session_name[i], 30, session_name[i], 31
           } else {
             printf "%s\t%s\n", pane[i], display[i]
           }
@@ -229,8 +238,8 @@ list_agents() {
 }
 
 has_agent_rows() {
-  local pane display state
-  while IFS=$'\t' read -r pane display; do
+  local pane session display state
+  while IFS=$'\t' read -r pane session display; do
     state=${display%%[[:space:]]*}
     case "$state" in
       blocked|done|idle|working) return 0 ;;
@@ -239,10 +248,79 @@ has_agent_rows() {
   return 1
 }
 
+load_session_colours() {
+  local configured token red green blue colour
+  local -a tokens
+  SESSION_COLOURS=()
+  configured=$(theme_option @ap_session_colors)
+  IFS=$' \t\n' read -ra tokens <<< "$configured"
+  (( ${#tokens[@]} > 0 )) || return 0
+  for token in "${tokens[@]}"; do
+    case "$token" in
+      \#[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f])
+        red=$((16#${token:1:2}))
+        green=$((16#${token:3:2}))
+        blue=$((16#${token:5:2}))
+        printf -v colour '\033[38;2;%d;%d;%dm' "$red" "$green" "$blue"
+        SESSION_COLOURS+=("$colour")
+        ;;
+    esac
+  done
+}
+
 colour_agents() {
-  local pane display state colour rest
-  while IFS=$'\t' read -r pane display; do
+  local pane session display state colour rest session_colour
+  local session_list palette_index
+  local marker_start=$'\036' marker_end=$'\037' reset=$'\033[0m'
+  local -a row_panes row_sessions row_displays sessions palette_indices
+  local row_count=0 session_count=0 palette_count=0 i j
+
+  while IFS=$'\t' read -r pane session display; do
     [[ -n $pane ]] || continue
+    row_panes[$row_count]=$pane
+    row_sessions[$row_count]=$session
+    row_displays[$row_count]=$display
+    row_count=$((row_count + 1))
+  done
+
+  load_session_colours
+  palette_count=${#SESSION_COLOURS[@]}
+  if (( row_count > 0 && palette_count > 0 )); then
+    session_list=$(printf '%s\n' "${row_sessions[@]}" | LC_ALL=C sort -u)
+    while IFS= read -r session; do
+      [[ -n $session ]] || continue
+      sessions[$session_count]=$session
+      session_count=$((session_count + 1))
+    done <<< "$session_list"
+    for ((i = 0; i < session_count; i++)); do
+      if (( session_count <= palette_count )); then
+        palette_indices[$i]=$((i * palette_count / session_count))
+      else
+        palette_indices[$i]=$((i % palette_count))
+      fi
+    done
+  fi
+
+  for ((i = 0; i < row_count; i++)); do
+    pane=${row_panes[$i]}
+    session=${row_sessions[$i]}
+    display=${row_displays[$i]}
+    session_colour=''
+    if (( session_count > 0 )); then
+      for ((j = 0; j < session_count; j++)); do
+        [[ ${sessions[$j]} == "$session" ]] || continue
+        palette_index=${palette_indices[$j]}
+        session_colour=${SESSION_COLOURS[$palette_index]}
+        break
+      done
+    fi
+    if [[ -n $session_colour ]]; then
+      display=${display//$marker_start/$session_colour}
+      display=${display//$marker_end/$reset}
+    else
+      display=${display//$marker_start/}
+      display=${display//$marker_end/}
+    fi
     state=${display%%[[:space:]]*}
     rest=${display#*[[:space:]]}
     case "$state" in
@@ -252,7 +330,7 @@ colour_agents() {
       working) colour='\033[33m' ;;
       *) colour='' ;;
     esac
-    printf '%s\t%b%s\033[0m\t%s\n' "$pane" "$colour" "$state" "$rest"
+    printf '%s\t%s\t%b%s\033[0m\t%s\n' "$pane" "$session" "$colour" "$state" "$rest"
   done
 }
 
@@ -335,7 +413,7 @@ kill_session_for_pane() {
 }
 
 coloured_agents() {
-  list_agents "${1:-}" | colour_agents
+  list_agents "${1:-}" 1 | colour_agents
 }
 
 go_to_pane() {
@@ -352,14 +430,14 @@ interactive() {
   client_q=$(client_quote "$client")
   root_q=$(printf '%q' "$ROOT")
   current_pane=$(current_pane_for_client "$client")
-  agents=$(list_agents "$current_pane")
+  agents=$(list_agents "$current_pane" 1)
   footer=$NORMAL_FOOTER
   has_agent_rows "$agents" || footer=$EMPTY_FOOTER
   theme=$(theme_option @ap_fzf_colors)
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
-    --ansi --delimiter=$'\t' --with-nth=2.. --tiebreak=index --reverse --cycle \
+    --ansi --delimiter=$'\t' --nth=1,2,3.. --with-nth=3.. --tiebreak=index --reverse --cycle \
     "${fzf_colors[@]}" \
     --with-shell 'bash -c' --no-input --footer "$footer" \
     --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \

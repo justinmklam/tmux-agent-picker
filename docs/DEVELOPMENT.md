@@ -162,11 +162,14 @@ For agents whose process name never appears, see the wrapper-script fallback in 
 
 ## Theming
 
-The active theme is `theme/catppuccin-mocha.tmux.conf`; substitute your install path. It defines three tmux options:
+The active theme is `theme/catppuccin-mocha.tmux.conf`; substitute your install path. It defines four tmux options:
 
 - `@ap_fzf_colors` — fzf `--color` syntax, read by both pickers.
+- `@ap_session_colors` — an ordered, space-separated `#RRGGBB` palette for session-name truecolour accents in the agent picker.
 - `@ap_popup_style` — tmux popup foreground and background style, read by the binding.
 - `@ap_popup_border_style` — tmux popup border style, read by the binding.
+
+The agent picker assigns session-name colours per render from the ordered `@ap_session_colors` palette. All rows belonging to one session use the same colour during that render, while distinct visible sessions receive evenly spread palette entries. Colours can change when the visible session set changes, and uniqueness is guaranteed only up to the palette length. Invalid palette tokens are ignored; if the option is missing or no valid tokens remain, session names are uncoloured. Custom themes should provide a compatible space-separated `#RRGGBB` list.
 
 Edit those options in the theme file, then reload tmux:
 
@@ -174,7 +177,7 @@ Edit those options in the theme file, then reload tmux:
 tmux source-file ~/.tmux.conf
 ```
 
-To add another theme, copy the file, change the three options, and update the `source-file` line in `tmux/tmux-agent-picker.tmux.conf`. Do not duplicate palette values in the scripts.
+To add another theme, copy the file, change the four options, and update the `source-file` line in `tmux/tmux-agent-picker.tmux.conf`. Do not duplicate palette values in the scripts.
 
 ## Development commands
 
@@ -275,7 +278,7 @@ tmux source-file ~/.tmux.conf
 rm ~/.pi/agent/extensions/agent-state.ts
 ```
 
-Run `/reload` in pi after removing the symlink. Restarting the tmux server instead also removes the binding and hooks. The `@ap_*` theme options remain set, and `focus-events` remains enabled, until the tmux server restarts. If this installation exclusively enabled them, unset the theme options with `tmux set -gu @ap_fzf_colors`, `tmux set -gu @ap_popup_style`, and `tmux set -gu @ap_popup_border_style`; leave `focus-events` unchanged if other configuration uses it.
+Run `/reload` in pi after removing the symlink. Restarting the tmux server instead also removes the binding and hooks. The `@ap_*` theme options remain set, and `focus-events` remains enabled, until the tmux server restarts. If this installation exclusively enabled them, unset the theme options with `tmux set -gu @ap_fzf_colors`, `tmux set -gu @ap_session_colors`, `tmux set -gu @ap_popup_style`, and `tmux set -gu @ap_popup_border_style`; leave `focus-events` unchanged if other configuration uses it.
 
 After reloading, press `prefix + alt + u` to ask TPM to clean the removed plugin, or delete its directory under `$TMUX_PLUGIN_MANAGER_PATH` manually.
 

@@ -4,6 +4,7 @@ set -u
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 SERVER=ap-test
 WRAP_SERVER=ap-wrap
+COLOUR_SERVER=ap-colour
 CLIENT_SCRIPT_PID=''
 TMP_ROOT=$(mktemp -d)
 TMP_ROOT=$(cd "$TMP_ROOT" && pwd)
@@ -15,6 +16,7 @@ cleanup() {
   [[ -n $CLIENT_SCRIPT_PID ]] && kill "$CLIENT_SCRIPT_PID" >/dev/null 2>&1 || true
   tmux -L "$SERVER" kill-server >/dev/null 2>&1 || true
   tmux -L "$WRAP_SERVER" kill-server >/dev/null 2>&1 || true
+  tmux -L "$COLOUR_SERVER" kill-server >/dev/null 2>&1 || true
   rm -rf "$TMP_ROOT" "$TMUX_TMPDIR" "$_ZO_DATA_DIR"
 }
 trap cleanup EXIT
@@ -304,6 +306,56 @@ TMUX_PANE= "$ROOT/bin/agent-pick" --go "$PLAIN_ACTIVE_PANE"
 assert_eq 1 "$(pane_option "$PLAIN_ACTIVE_PANE" '#{pane_active}')" '(h2) accepts an uninstrumented session row target'
 tmux_cmd kill-session -t plain-session
 
+# (h3) session names receive per-render colours without changing --list.
+COLOUR_SERVER=ap-colour
+COLOUR_INFO=''
+tmux -L "$COLOUR_SERVER" -f /dev/null new-session -d -s up-ces-eventing -c "$TMP_ROOT" 'exec sleep 3600'
+COLOUR_INFO=$(tmux -L "$COLOUR_SERVER" display-message -p '#{socket_path},#{pid},0')
+OLD_SERVER=$SERVER
+OLD_TMUX=$TMUX
+SERVER=$COLOUR_SERVER
+export TMUX=$COLOUR_INFO
+COLOUR_CORE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-core-entity-service -c "$TMP_ROOT" 'exec sleep 3600')
+COLOUR_CORE_SECOND=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t up-core-entity-service: -n second 'exec sleep 3600')
+COLOUR_CES=$(tmux_cmd display-message -p -t up-ces-eventing '#{pane_id}')
+tmux_cmd new-session -d -s up-standalone -c "$TMP_ROOT" 'exec sleep 3600'
+run_state "$COLOUR_CORE" set pi working
+run_state "$COLOUR_CORE_SECOND" set pi done
+run_state "$COLOUR_CES" set pi blocked
+tmux_cmd set-option -g @ap_session_colors '#f5c2e7 #fab387 #f9e2af #a6e3a1 #94e2d5 #89dceb #89b4fa #cba6f7'
+COLOUR_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+COLOUR_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows)
+[[ $COLOUR_LIST != *$'\033'* ]] || fail '(h3) raw listing has no presentation escapes'
+ok '(h3) raw listing has no presentation escapes'
+assert_eq '' "$(printf '%s\n' "$COLOUR_LIST" | awk -F '\t' 'NF != 2 {print; exit}')" '(h3) raw listing keeps its two-column contract'
+CORE_COLOUR=$'\033[38;2;249;226;175m'
+CORE_RESET=$'\033[0m'
+[[ $COLOUR_ROWS == *"${CORE_COLOUR}up-core-entity-service${CORE_RESET}:"* ]] || fail '(h3) colours the core session name'
+assert_eq 2 "$(printf '%s\n' "$COLOUR_ROWS" | grep -aF -c "${CORE_COLOUR}up-core-entity-service${CORE_RESET}:" || true)" \
+  '(h3) keeps one colour across same-session rows'
+CES_COLOUR=$'\033[38;2;245;194;231m'
+[[ $COLOUR_ROWS == *"${CES_COLOUR}up-ces-eventing${CORE_RESET}:"* ]] || fail '(h3) colours the ces session name'
+[[ $COLOUR_ROWS != *"${CORE_COLOUR}up-ces-eventing${CORE_RESET}:"* ]] || fail '(h3) separates fixture session colours'
+ok '(h3) separates fixture session colours'
+STANDALONE_COLOUR=$'\033[38;2;137;220;235m'
+[[ $COLOUR_ROWS == *"session${CORE_RESET}"$'\t'"${STANDALONE_COLOUR}up-standalone"$'\033[0m'* ]] || fail '(h3) colours standalone session rows'
+ok '(h3) colours standalone session rows'
+tmux_cmd set-option -g @ap_session_colors 'invalid #12345g'
+FALLBACK_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows)
+[[ $FALLBACK_ROWS != *$'\033[38;2;'* ]] || fail '(h3) ignores unusable session palette values'
+ok '(h3) ignores unusable session palette values'
+tmux_cmd set-option -gu @ap_session_colors
+MISSING_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows)
+[[ $MISSING_ROWS == *'up-core-entity-service'* && $MISSING_ROWS != *$'\033[38;2;'* ]] || fail '(h3) keeps rows when session palette is unset'
+ok '(h3) keeps rows when session palette is unset'
+tmux_cmd set-option -g @ap_session_colors ''
+EMPTY_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows)
+[[ $EMPTY_ROWS == *'up-core-entity-service'* && $EMPTY_ROWS != *$'\033[38;2;'* ]] || fail '(h3) keeps rows when session palette is empty'
+ok '(h3) keeps rows when session palette is empty'
+tmux -L "$COLOUR_SERVER" kill-server >/dev/null 2>&1 || true
+SERVER=$OLD_SERVER
+export TMUX=$OLD_TMUX
+
 # (i)-(n) session opener behavior.
 mkdir -p "$TMP_ROOT/proj" "$TMP_ROOT/other/proj" "$TMP_ROOT/my.app" "$TMP_ROOT/x/proj"
 OPENED=$("$ROOT/bin/agent-new" --open "$TMP_ROOT/proj") || fail '(i) opens a new directory session'
@@ -365,6 +417,8 @@ KEY=$(tmux_cmd list-keys -T prefix a)
 ok '(q) binding uses configured picker root'
 [[ -n $(tmux_cmd show-options -gv @ap_fzf_colors) ]] || fail '(q) loads theme from configured picker root'
 ok '(q) loads theme from configured picker root'
+[[ -n $(tmux_cmd show-options -gv @ap_session_colors) ]] || fail '(q) loads session palette from configured picker root'
+ok '(q) loads session palette from configured picker root'
 tmux_cmd source-file "$ROOT/tmux/tmux-agent-picker.tmux.conf"
 for hook in pane-focus-in after-select-pane after-select-window client-session-changed; do
   count=$(tmux_cmd show-hooks -g "$hook" 2>/dev/null | grep -c 'bin/agent-state' || true)

@@ -101,10 +101,11 @@ The test harness must use a private tmux server, `TMUX_TMPDIR`, and `_ZO_DATA_DI
 The active theme is `theme/catppuccin-mocha.tmux.conf`. It defines:
 
 - `@ap_fzf_colors` — fzf `--color` syntax.
+- `@ap_session_colors` — ordered `#RRGGBB` session-name palette read by `bin/agent-pick`.
 - `@ap_popup_style` — tmux popup foreground and background style.
 - `@ap_popup_border_style` — tmux popup border style.
 
-Both picker scripts read `@ap_fzf_colors` from tmux. The tmux binding reads the two popup style options. Add or switch themes by changing the sourced theme file in `tmux/tmux-agent-picker.tmux.conf`; do not duplicate palette values in the scripts.
+Both picker scripts read `@ap_fzf_colors` from tmux. `bin/agent-pick` also reads `@ap_session_colors`; the tmux binding reads the two popup style options. Add or switch themes by changing the sourced theme file in `tmux/tmux-agent-picker.tmux.conf`; do not duplicate palette values in the scripts.
 
 ### Configuration boundaries
 
