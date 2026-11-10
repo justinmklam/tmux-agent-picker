@@ -450,6 +450,8 @@ assert_eq "$ORDER_ZULU_OLD" "$SESSION_CURRENT_FIRST" '(o-order) keeps current pa
 SESSION_RELOAD_ACTION=$(FZF_PROMPT=session-order "$ROOT/bin/agent-pick" --reload-action --client test-client)
 [[ $SESSION_RELOAD_ACTION == *'--client test-client --order session'* ]] || fail '(o-order) x reload preserves session order'
 ok '(o-order) x reload preserves session order'
+[[ $SESSION_RELOAD_ACTION != *'+first'* ]] || fail '(o-order) x reload preserves cursor position'
+ok '(o-order) x reload preserves cursor position'
 TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --order
 assert_eq 0 "$?" '(o-order) missing order value does not hang'
 TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --client
@@ -589,6 +591,9 @@ done
 DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -c "$TMP_ROOT" 'exec sleep 3600')
 run_state "$DOOMED_PANE" set pi blocked
 tmux_cmd set-option -pt "$DOOMED_PANE" @ap_since "$(date +%s)"
+CURSOR_TARGET_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s cursor-target -c "$TMP_ROOT" 'exec sleep 3600')
+run_state "$CURSOR_TARGET_PANE" set pi blocked
+tmux_cmd set-option -pt "$CURSOR_TARGET_PANE" @ap_since "$(( $(date +%s) + 1 ))"
 script -q /dev/null tmux -L "$SERVER" attach-session -t doomed >/dev/null 2>&1 &
 CLIENT_SCRIPT_PID=$!
 DOOMED_CLIENT=''
@@ -605,6 +610,30 @@ FIRST_ROW=$(tmux_cmd capture-pane -p -t "$KILLER" | grep -E 'blocked[[:space:]]+
   printf '%s\n' "$FIRST_ROW" >&2
   fail '(o2) newest blocked row sorts first'
 }
+tmux_cmd send-keys -t "$KILLER" j
+sleep 0.2
+assert_match 'cursor-target' "$(picker_focused_row "$KILLER")" '(o2) moves to the second row before deleting'
+tmux_cmd send-keys -t "$KILLER" x
+wait_for "$KILLER" 'kill session cursor-target? [y/N]' || fail '(o2) prompts for the second-row session'
+tmux_cmd send-keys -t "$KILLER" y
+for i in $(seq 1 100); do
+  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- cursor-target || true) ]] && break
+  sleep 0.05
+done
+assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- cursor-target || true)" '(o2) second-row confirmation kills the session'
+wait_for_normal "$KILLER" || fail '(o2) picker stays open after second-row delete'
+ROWS_AFTER_DELETE=''
+for i in $(seq 1 100); do
+  ROWS_AFTER_DELETE=$(picker_rows "$KILLER")
+  [[ -n $ROWS_AFTER_DELETE && $ROWS_AFTER_DELETE != *cursor-target* ]] && break
+  sleep 0.05
+done
+[[ -n $ROWS_AFTER_DELETE && $ROWS_AFTER_DELETE != *cursor-target* ]] || fail '(o2) reload drops the second-row session'
+FOCUSED_AFTER_DELETE=$(picker_focused_row "$KILLER")
+assert_eq "$(printf '%s\n' "$ROWS_AFTER_DELETE" | sed -n 2p)" "$FOCUSED_AFTER_DELETE" '(o2) second-row delete preserves cursor position'
+tmux_cmd send-keys -t "$KILLER" k
+sleep 0.2
+assert_eq "$(picker_rows "$KILLER" | head -n 1)" "$(picker_focused_row "$KILLER")" '(o2) returns to the first row for the next delete'
 tmux_cmd send-keys -t "$KILLER" x
 wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts before killing'
 ok '(o2) x prompts before killing'

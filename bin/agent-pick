@@ -520,7 +520,7 @@ reload_action() {
   fi
   root_q=$(printf '%q' "$ROOT")
   client_q=$(client_quote "$client")
-  printf 'reload(%s/bin/agent-pick --rows --client %s --order %s)+change-footer(%s)+first' \
+  printf 'reload(%s/bin/agent-pick --rows --client %s --order %s)+change-footer(%s)' \
     "$root_q" "$client_q" "$order" "$footer"
 }
 
