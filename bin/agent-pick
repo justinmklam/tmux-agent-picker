@@ -3,9 +3,14 @@ set -u
 
 TMUX_BIN=${TMUX_BIN:-tmux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-NORMAL_FOOTER='Enter go  n new session  x kill session  / filter  j/k move  q/Esc close'
-FILTER_FOOTER='type to filter  Enter go  Esc back'
-EMPTY_FOOTER='no agents — Enter go  n new session  / filter  j/k move  q/Esc close'
+NORMAL_FOOTER='Tab session order  Enter  n  x kill  /  j/k  q/Esc'
+SESSION_FOOTER='Tab state order  Enter  n  x kill  /  j/k  q/Esc'
+FILTER_FOOTER='Tab session order  type to filter  Enter  Esc back'
+FILTER_SESSION_FOOTER='Tab state order  type to filter  Enter  Esc back'
+EMPTY_FOOTER='Tab session order  no agents  Enter  n  /  j/k  q/Esc'
+EMPTY_SESSION_FOOTER='Tab state order  no agents  Enter  n  /  j/k  q/Esc'
+DEFAULT_BORDER_LABEL=' agents · Tab sess '
+SESSION_BORDER_LABEL=' agents · Tab state '
 
 theme_option() {
   "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
@@ -150,11 +155,16 @@ active_pane_for_session() {
 }
 
 list_agents() {
-  local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0}
+  local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0} sort_order=${3:-state}
   local pane state since agent session session_id window pane_index command title pid
   local tier age display current_rank
   local session_pane sessions_with_agents=''
+  local -a sort_args
   local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}'
+  case "$sort_order" in
+    session) sort_args=(-k1,1n -k6,6 -k3,3nr -k4,4 -k5,5) ;;
+    *) sort_order=state; sort_args=(-k1,1n -k2,2n -k3,3nr -k4,4 -k5,5) ;;
+  esac
   {
     AGENT_NAMES=$(agent_names)
     NOW=$(date +%s)
@@ -200,7 +210,7 @@ list_agents() {
       printf '%s\t4\t0\t%s\t%s\t%s\tsession %s\n' "$current_rank" "$session_pane" "$session_pane" "$session_name" "$session_name"
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
-    LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5 |
+    LC_ALL=C sort -t $'\t' "${sort_args[@]}" |
     awk -v metadata="$metadata" -F '\t' '
       {
         pane[NR] = $5
@@ -413,7 +423,7 @@ kill_session_for_pane() {
 }
 
 coloured_agents() {
-  list_agents "${1:-}" 1 | colour_agents
+  list_agents "${1:-}" 1 "${2:-state}" | colour_agents
 }
 
 go_to_pane() {
@@ -425,46 +435,175 @@ go_to_pane() {
   $TMUX_BIN select-pane -t "$pane" >/dev/null 2>&1 || true
 }
 
+toggle_action() {
+  local client='' next_order next_prompt footer filter_footer border_label root_q client_q agents
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --client)
+        if (( $# >= 2 )); then client=$2; shift 2; else client=''; shift; fi
+        ;;
+      *) shift ;;
+    esac
+  done
+  if [[ ${FZF_PROMPT:-} == session-order* ]]; then
+    next_order=state
+    next_prompt='attention-order '
+    footer=$NORMAL_FOOTER
+    filter_footer=$FILTER_FOOTER
+    border_label=$DEFAULT_BORDER_LABEL
+  else
+    next_order=session
+    next_prompt='session-order '
+    footer=$SESSION_FOOTER
+    filter_footer=$FILTER_SESSION_FOOTER
+    border_label=$SESSION_BORDER_LABEL
+  fi
+  agents=$(list_agents "$(current_pane_for_client "$client")" 1 "$next_order")
+  if ! has_agent_rows "$agents"; then
+    [[ $next_order == session ]] && footer=$EMPTY_SESSION_FOOTER || footer=$EMPTY_FOOTER
+  fi
+  if [[ ${FZF_INPUT_STATE:-} == enabled ]]; then
+    footer=$filter_footer
+  fi
+  root_q=$(printf '%q' "$ROOT")
+  client_q=$(client_quote "$client")
+  printf 'reload(%s/bin/agent-pick --rows --client %s --order %s)+change-prompt(%s)+change-footer(%s)+change-border-label(%s)+first' \
+    "$root_q" "$client_q" "$next_order" "$next_prompt" "$footer" "$border_label"
+}
+
+escape_action() {
+  local client='' order=state footer agents
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --client)
+        if (( $# >= 2 )); then client=$2; shift 2; else client=''; shift; fi
+        ;;
+      *) shift ;;
+    esac
+  done
+  if [[ ${FZF_INPUT_STATE:-} != enabled ]]; then
+    printf 'abort'
+    return 0
+  fi
+  [[ ${FZF_PROMPT:-} == session-order* ]] && order=session
+  if [[ $order == session ]]; then
+    footer=$SESSION_FOOTER
+  else
+    footer=$NORMAL_FOOTER
+  fi
+  agents=$(list_agents "$(current_pane_for_client "$client")" 1 "$order")
+  if ! has_agent_rows "$agents"; then
+    [[ $order == session ]] && footer=$EMPTY_SESSION_FOOTER || footer=$EMPTY_FOOTER
+  fi
+  printf 'clear-query+hide-input+rebind(n,x,/,j,k)+change-footer(%s)' "$footer"
+}
+
+reload_action() {
+  local client='' order=state footer agents root_q client_q
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --client)
+        if (( $# >= 2 )); then client=$2; shift 2; else client=''; shift; fi
+        ;;
+      *) shift ;;
+    esac
+  done
+  [[ ${FZF_PROMPT:-} == session-order* ]] && order=session
+  if [[ $order == session ]]; then
+    footer=$SESSION_FOOTER
+  else
+    footer=$NORMAL_FOOTER
+  fi
+  agents=$(list_agents "$(current_pane_for_client "$client")" 1 "$order")
+  if ! has_agent_rows "$agents"; then
+    [[ $order == session ]] && footer=$EMPTY_SESSION_FOOTER || footer=$EMPTY_FOOTER
+  fi
+  root_q=$(printf '%q' "$ROOT")
+  client_q=$(client_quote "$client")
+  printf 'reload(%s/bin/agent-pick --rows --client %s --order %s)+change-footer(%s)+first' \
+    "$root_q" "$client_q" "$order" "$footer"
+}
+
+filter_action() {
+  local footer=$FILTER_FOOTER
+  [[ ${FZF_PROMPT:-} == session-order* ]] && footer=$FILTER_SESSION_FOOTER
+  printf 'show-input+unbind(n,x,/,j,k)+change-footer(%s)' "$footer"
+}
+
 interactive() {
-  local client=${1:-} client_q agents footer theme root_q current_pane fzf_colors=()
+  local client=${1:-} client_q agents footer theme root_q current_pane border_label fzf_colors=()
   client_q=$(client_quote "$client")
   root_q=$(printf '%q' "$ROOT")
   current_pane=$(current_pane_for_client "$client")
-  agents=$(list_agents "$current_pane" 1)
+  agents=$(list_agents "$current_pane" 1 state)
   footer=$NORMAL_FOOTER
-  has_agent_rows "$agents" || footer=$EMPTY_FOOTER
+  border_label=$DEFAULT_BORDER_LABEL
+  if ! has_agent_rows "$agents"; then
+    footer=$EMPTY_FOOTER
+  fi
   theme=$(theme_option @ap_fzf_colors)
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
     --ansi --delimiter=$'\t' --nth=1,2,3.. --with-nth=3.. --tiebreak=index --reverse --cycle \
     "${fzf_colors[@]}" \
-    --with-shell 'bash -c' --no-input --footer "$footer" \
-    --border-label=' agents ' --preview 'tmux capture-pane -ep -t {1}' \
+    --with-shell 'bash -c' --no-input --prompt='attention-order ' --footer "$footer" \
+    --border-label="$border_label" --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='right:50%,follow' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
-    --bind "x:execute($root_q/bin/agent-pick --kill {1})+reload($root_q/bin/agent-pick --rows --client $client_q)" \
-    --bind "/:show-input+unbind(n,x,/,j,k)+change-footer($FILTER_FOOTER)" \
+    --bind "x:execute($root_q/bin/agent-pick --kill {1})+transform($root_q/bin/agent-pick --reload-action --client $client_q)" \
+    --bind "tab:transform($root_q/bin/agent-pick --toggle-action --client $client_q)" \
+    --bind "/:transform($root_q/bin/agent-pick --filter-action)" \
     --bind 'j:down,k:up' \
     --bind 'change:first' \
     --bind 'q:abort' \
-    --bind "esc:transform:if [[ \$FZF_INPUT_STATE = enabled ]]; then echo 'clear-query+hide-input+rebind(n,x,/,j,k)+change-footer($footer)'; else echo abort; fi" \
+    --bind "esc:transform($root_q/bin/agent-pick --escape-action --client $client_q)" \
     --bind "enter:become($root_q/bin/agent-pick --go {1} --client $client_q)" \
     < <(colour_agents <<< "$agents")
 }
 
+parse_picker_args() {
+  PICKER_CLIENT=''
+  PICKER_ORDER=state
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --client)
+        if (( $# >= 2 )); then PICKER_CLIENT=$2; shift 2; else PICKER_CLIENT=''; shift; fi
+        ;;
+      --order)
+        if (( $# >= 2 )); then PICKER_ORDER=$2; shift 2; else PICKER_ORDER=state; shift; fi
+        ;;
+      *) shift ;;
+    esac
+  done
+}
+
 case "${1:-}" in
+  --toggle-action)
+    shift
+    toggle_action "$@"
+    ;;
+  --escape-action)
+    shift
+    escape_action "$@"
+    ;;
+  --reload-action)
+    shift
+    reload_action "$@"
+    ;;
+  --filter-action)
+    shift
+    filter_action
+    ;;
   --list)
     shift
-    client=''
-    [[ ${1:-} == --client ]] && client=${2:-}
-    list_agents "$(current_pane_for_client "$client")"
+    parse_picker_args "$@"
+    list_agents "$(current_pane_for_client "$PICKER_CLIENT")" 0 "$PICKER_ORDER"
     ;;
   --rows)
     shift
-    client=''
-    [[ ${1:-} == --client ]] && client=${2:-}
-    coloured_agents "$(current_pane_for_client "$client")"
+    parse_picker_args "$@"
+    coloured_agents "$(current_pane_for_client "$PICKER_CLIENT")" "$PICKER_ORDER"
     ;;
   --kill)
     kill_session_for_pane "${2:-}"

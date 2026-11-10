@@ -52,7 +52,9 @@ wait_for() {
   local pane=$1 text=$2 i screen
   for i in $(seq 1 100); do
     screen=$(tmux_cmd capture-pane -p -t "$pane" 2>/dev/null || true)
-    [[ $screen == *"$text"* ]] && return 0
+    if [[ $screen == *"$text"* || ( $text == 'Enter go' && ( $screen == *'Tab session order'* || $screen == *'Tab state order'* ) ) ]]; then
+      return 0
+    fi
     sleep 0.05
   done
   printf 'timed out waiting for %q in pane %s\n' "$text" "$pane" >&2
@@ -64,10 +66,26 @@ wait_for_normal() {
   local pane=$1 i screen
   for i in $(seq 1 100); do
     screen=$(tmux_cmd capture-pane -p -t "$pane" 2>/dev/null || true)
-    [[ $screen == *'Enter go'* && $screen != *'type to filter'* ]] && return 0
+    [[ ($screen == *'Tab session order'* || $screen == *'Tab state order'*) && $screen != *'type to filter'* ]] && return 0
     sleep 0.05
   done
   return 1
+}
+
+run_bounded() {
+  local pid i
+  "$@" >/dev/null 2>&1 &
+  pid=$!
+  for i in $(seq 1 100); do
+    if ! kill -0 "$pid" 2>/dev/null; then
+      wait "$pid"
+      return $?
+    fi
+    sleep 0.05
+  done
+  kill "$pid" >/dev/null 2>&1 || true
+  wait "$pid" >/dev/null 2>&1 || true
+  return 124
 }
 
 tmux_cmd() { tmux -L "$SERVER" "$@"; }
@@ -406,6 +424,40 @@ tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 tmux_cmd set-option -pt "${ORDER_PANES[3]}" @ap_since $((now - 30))
 tmux_cmd set-option -pt "${ORDER_PANES[4]}" @ap_since $((now - 40))
 
+# (o-order) explicit session ordering groups alphabetically, then by newest state change.
+ORDER_ALPHA_OLD=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-alpha -c "$TMP_ROOT" 'exec sleep 3600')
+ORDER_ALPHA_NEW=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-alpha: -n newer 'exec sleep 3600')
+ORDER_BETA=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-beta -c "$TMP_ROOT" 'exec sleep 3600')
+ORDER_ZULU_NEW=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-zulu -c "$TMP_ROOT" 'exec sleep 3600')
+ORDER_ZULU_OLD=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-zulu: -n older 'exec sleep 3600')
+run_state "$ORDER_ALPHA_OLD" set pi blocked
+run_state "$ORDER_ALPHA_NEW" set pi idle
+run_state "$ORDER_ZULU_NEW" set pi working
+run_state "$ORDER_ZULU_OLD" set pi done
+tmux_cmd set-option -pt "$ORDER_ALPHA_OLD" @ap_since $((now - 50))
+tmux_cmd set-option -pt "$ORDER_ALPHA_NEW" @ap_since $((now - 10))
+tmux_cmd set-option -pt "$ORDER_ZULU_NEW" @ap_since $((now - 20))
+tmux_cmd set-option -pt "$ORDER_ZULU_OLD" @ap_since $((now - 40))
+SESSION_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows --order session | \
+  sed -E $'s/\033\\[[0-9;]*m//g' | \
+  awk -F '\t' '$2 ~ /^order-(alpha|beta|zulu)$/ { if ($3 ~ /^session /) print "session:" $2; else { split($3, fields, /[[:space:]]+/); print fields[1] ":" $2 } }')
+EXPECTED_SESSION_ROWS=$(printf '%s\n' \
+  'idle:order-alpha' 'blocked:order-alpha' 'session:order-beta' \
+  'working:order-zulu' 'done:order-zulu')
+assert_eq "$EXPECTED_SESSION_ROWS" "$SESSION_ROWS" '(o-order) groups rows by alphabetical session and newest first'
+SESSION_CURRENT_FIRST=$(TMUX_PANE="$ORDER_ZULU_OLD" "$ROOT/bin/agent-pick" --rows --order session | head -n 1 | cut -f1)
+assert_eq "$ORDER_ZULU_OLD" "$SESSION_CURRENT_FIRST" '(o-order) keeps current pane first in session order'
+SESSION_RELOAD_ACTION=$(FZF_PROMPT=session-order "$ROOT/bin/agent-pick" --reload-action --client test-client)
+[[ $SESSION_RELOAD_ACTION == *'--client test-client --order session'* ]] || fail '(o-order) x reload preserves session order'
+ok '(o-order) x reload preserves session order'
+TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --order
+assert_eq 0 "$?" '(o-order) missing order value does not hang'
+TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --client
+assert_eq 0 "$?" '(o-order) missing client value does not hang'
+for session in order-alpha order-beta order-zulu; do
+  tmux_cmd kill-session -t "$session"
+done
+
 INSTALL_ROOT="$TMP_ROOT/tmux agent-picker-install"
 ln -s "$ROOT" "$INSTALL_ROOT"
 "$INSTALL_ROOT/tmux-agent-picker.tmux"
@@ -447,7 +499,7 @@ PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker "exec \"$INSTALL_ROOT/b
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker '#{pane_id}')
 wait_for "$PICKER" 'Enter go' || fail '(o) picker did not start'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
-[[ $SCREEN == *'Enter go  n new session'* ]] || fail '(o) shows normal footer with agent rows'
+[[ $SCREEN == *'Tab session order'* ]] || fail '(o) shows the default order footer'
 [[ $SCREEN =~ blocked[[:space:]]+pi && $SCREEN =~ done[[:space:]]+pi && $SCREEN =~ idle[[:space:]]+pi && $SCREEN =~ working[[:space:]]+pi ]] || {
   printf '%s\n' "$SCREEN" >&2
   fail '(o) shows ordered agent rows'
@@ -461,6 +513,77 @@ ok '(o) shows ordered agent rows'
 ok '(o) hides input in normal mode'
 [[ $SCREEN == *'x kill'* ]] || fail '(o) footer advertises the kill key'
 ok '(o) footer advertises the kill key'
+
+# (o-order-ui) Tab toggles between the default and session-oriented views.
+ORDER_ALPHA_OLD=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-alpha -c "$TMP_ROOT" 'exec sleep 3600')
+ORDER_ALPHA_NEW=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-alpha: -n newer 'exec sleep 3600')
+ORDER_BETA=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-beta -c "$TMP_ROOT" 'exec sleep 3600')
+ORDER_ZULU_NEW=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-zulu -c "$TMP_ROOT" 'exec sleep 3600')
+ORDER_ZULU_OLD=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-zulu: -n older 'exec sleep 3600')
+run_state "$ORDER_ALPHA_OLD" set pi blocked
+run_state "$ORDER_ALPHA_NEW" set pi idle
+run_state "$ORDER_ZULU_NEW" set pi working
+run_state "$ORDER_ZULU_OLD" set pi done
+tmux_cmd set-option -pt "$ORDER_ALPHA_OLD" @ap_since $((now - 50))
+tmux_cmd set-option -pt "$ORDER_ALPHA_NEW" @ap_since $((now - 10))
+tmux_cmd set-option -pt "$ORDER_ZULU_NEW" @ap_since $((now - 20))
+tmux_cmd set-option -pt "$ORDER_ZULU_OLD" @ap_since $((now - 40))
+order_fixture_rows() {
+  picker_rows "$1" | awk '$0 ~ /order-(alpha|beta|zulu)/ { if ($1 == "session") print "session:" $2; else { location = $3; sub(/:.*/, "", location); print $1 ":" location } }'
+}
+wait_for_order_rows() {
+  local pane=$1 expected=$2 actual=''
+  for _ in $(seq 1 100); do
+    actual=$(order_fixture_rows "$pane")
+    [[ $actual == "$expected" ]] && return 0
+    sleep 0.05
+  done
+  printf 'timed out waiting for order rows in pane %s\nexpected:\n%s\nactual:\n%s\n' \
+    "$pane" "$expected" "$actual" >&2
+  return 1
+}
+ORDER_PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-order-picker "exec \"$INSTALL_ROOT/bin/agent-pick\"")
+wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) picker did not start'
+assert_eq "$(printf '%s\n' \
+  'blocked:order-alpha' 'working:order-zulu' 'done:order-zulu' \
+  'idle:order-alpha' 'session:order-beta')" \
+  "$(order_fixture_rows "$ORDER_PICKER")" '(o-order-ui) starts in default order'
+SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
+[[ $SCREEN == *'Tab session order'* ]] || fail '(o-order-ui) shows the default order hint'
+ok '(o-order-ui) shows the default order hint'
+tmux_cmd send-keys -t "$ORDER_PICKER" Tab
+wait_for "$ORDER_PICKER" 'Tab state order' || fail '(o-order-ui) Tab switches to session ordering'
+wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
+  'idle:order-alpha' 'blocked:order-alpha' 'session:order-beta' \
+  'working:order-zulu' 'done:order-zulu')" || fail '(o-order-ui) Tab groups by session'
+ok '(o-order-ui) Tab switches to session ordering'
+tmux_cmd send-keys -t "$ORDER_PICKER" /
+wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-order-ui) filter opens in session order'
+SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
+[[ $SCREEN == *'Tab state order'* ]] || fail '(o-order-ui) filter shows the state-order hint'
+ok '(o-order-ui) filter shows the state-order hint'
+tmux_cmd send-keys -t "$ORDER_PICKER" Escape
+wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) Esc leaves session-order filter mode'
+tmux_cmd send-keys -t "$ORDER_PICKER" Tab
+wait_for "$ORDER_PICKER" 'Tab session order' || fail '(o-order-ui) Tab restores default ordering'
+wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
+  'blocked:order-alpha' 'working:order-zulu' 'done:order-zulu' \
+  'idle:order-alpha' 'session:order-beta')" || fail '(o-order-ui) restored default order'
+ok '(o-order-ui) second Tab restores default order'
+tmux_cmd send-keys -t "$ORDER_PICKER" /
+wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-order-ui) filter opens after order toggles'
+tmux_cmd send-keys -t "$ORDER_PICKER" a l p h a
+sleep 0.2
+tmux_cmd send-keys -t "$ORDER_PICKER" Tab
+wait_for "$ORDER_PICKER" 'Tab state order' || fail '(o-order-ui) Tab keeps the filter footer'
+wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
+  'idle:order-alpha' 'blocked:order-alpha')" || fail '(o-order-ui) Tab retains the filter query'
+tmux_cmd send-keys -t "$ORDER_PICKER" Escape
+wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) Esc leaves filter mode after order toggles'
+tmux_cmd send-keys -t "$ORDER_PICKER" q
+for session in order-alpha order-beta order-zulu; do
+  tmux_cmd kill-session -t "$session"
+done
 
 # (o2) x kills the session under the cursor only after y/N confirmation.
 DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -c "$TMP_ROOT" 'exec sleep 3600')
@@ -1496,6 +1619,18 @@ PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-empty "exec \"$INSTALL_ROOT/bi
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-empty '#{pane_id}')
 wait_for "$PICKER" 'no agents' || fail '(o) empty list shows its footer'
 ok '(o) empty list shows its footer'
+EMPTY_AGENT=$(new_pane empty-agent)
+run_state "$EMPTY_AGENT" set pi working
+tmux_cmd send-keys -t "$PICKER" Tab
+wait_for "$PICKER" 'Tab state order' || fail '(o) empty picker updates its footer after an agent appears'
+SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
+[[ $SCREEN != *'no agents'* ]] || fail '(o) empty picker drops the stale empty footer'
+ok '(o) empty picker drops the stale empty footer'
+run_state "$EMPTY_AGENT" clear
+tmux_cmd kill-pane -t "$EMPTY_AGENT"
+tmux_cmd send-keys -t "$PICKER" Tab
+wait_for "$PICKER" 'no agents' || fail '(o) picker restores empty footer after the agent disappears'
+ok '(o) picker restores empty footer after the agent disappears'
 tmux_cmd send-keys -t "$PICKER" Escape
 for i in $(seq 1 100); do
   [[ $(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}') == 1 ]] && break
