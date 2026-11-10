@@ -16,6 +16,13 @@ session_name_taken() {
   return 1
 }
 
+is_explicit_path() {
+  case ${1:-} in
+    /*|'~'|'~/'*|.|./*|..|../*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
 open_directory() {
   local dir=$1 client=${2:-} force_new=${3:-false} normalized base name suffix session_id existing_name existing_path
 
@@ -62,7 +69,7 @@ open_directory() {
 
 resolve_directory() {
   local query=${1:-} selected=${2:-} choice
-  if [[ $query == /* || $query == '~'* || $query == .* ]]; then
+  if is_explicit_path "$query"; then
     choice=$query
   else
     choice=$selected
@@ -81,7 +88,7 @@ resolve_directory() {
 
 open_selection() {
   local query=${1:-} selected=${2:-} choice client=${CLIENT:-}
-  if [[ $query == /* || $query == '~'* || $query == .* ]]; then
+  if is_explicit_path "$query"; then
     choice=$query
   else
     choice=$selected

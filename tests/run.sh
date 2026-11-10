@@ -824,6 +824,39 @@ done
 assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(r) Enter closes after opening a directory'
 assert_eq "$ENTER_DIR" "$(tmux_cmd display-message -p -t enter-dir '#{session_path}')" '(r) Enter creates the selected session'
 
+# Home-relative fixtures cover explicit typed paths and dotfile fuzzy queries.
+HOME_RELATIVE_HOME="$TMP_ROOT/home-relative"
+HOME_RELATIVE_DIR="$HOME_RELATIVE_HOME/.pi/agent"
+HOME_RELATIVE_ZO="$TMP_ROOT/home-relative-zo"
+mkdir -p "$HOME_RELATIVE_DIR" "$HOME_RELATIVE_ZO"
+HOME="$HOME_RELATIVE_HOME" _ZO_DATA_DIR="$HOME_RELATIVE_ZO" zoxide add "$HOME_RELATIVE_DIR"
+HOME_RELATIVE_TYPED="$HOME_RELATIVE_HOME/typed-only"
+mkdir -p "$HOME_RELATIVE_TYPED"
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-home-typed "HOME='$HOME_RELATIVE_HOME' _ZO_DATA_DIR='$HOME_RELATIVE_ZO' exec \"$INSTALL_ROOT/bin/agent-new\"")
+PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-home-typed '#{pane_id}')
+wait_for "$PICKER" 'Enter new session' || fail '(r-home) typed-home picker did not start'
+tmux_cmd send-keys -t "$PICKER" -l -- '~/typed-only'
+tmux_cmd send-keys -t "$PICKER" Enter
+for i in $(seq 1 100); do
+  [[ $(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}') == 1 ]] && break
+  sleep 0.05
+done
+assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(r-home) Enter closes after a typed home path'
+assert_eq "$HOME_RELATIVE_TYPED" "$(tmux_cmd display-message -p -t typed-only '#{session_path}')" '(r-home) typed home path overrides selection'
+
+# A dotfile-looking query should still use the selected home-relative row.
+PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-home "HOME='$HOME_RELATIVE_HOME' _ZO_DATA_DIR='$HOME_RELATIVE_ZO' exec \"$INSTALL_ROOT/bin/agent-new\"")
+PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-home '#{pane_id}')
+wait_for "$PICKER" 'Enter new session' || fail '(r-home) home-relative picker did not start'
+tmux_cmd send-keys -t "$PICKER" -l -- '.pi/agent'
+tmux_cmd send-keys -t "$PICKER" Enter
+for i in $(seq 1 100); do
+  [[ $(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}') == 1 ]] && break
+  sleep 0.05
+done
+assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(r-home) Enter closes after a dotfile query'
+assert_eq "$HOME_RELATIVE_DIR" "$(tmux_cmd display-message -p -t agent '#{session_path}')" '(r-home) dotfile query opens the selected home-relative directory'
+
 # (v) agents without lifecycle hooks are detected from their process.
 CLAUDE_LINK=$(agent_link claude)
 CODEX_RUN="$TMP_ROOT/@openai/codex/bin/run.js"

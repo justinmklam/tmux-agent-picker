@@ -119,7 +119,7 @@ Keys:
 
 Killing a session terminates every window and pane in it, including unsaved work. The list reloads afterwards and keeps the picker open.
 
-The directory picker (`n`) lists zoxide directories, switches to a session whose path matches the selection, and otherwise creates a session named after the directory, adding `-2`, `-3`, … on name collisions. `Esc` returns to the agent picker. The picker does not remove directories from zoxide; run `zoxide remove <directory>` yourself.
+The directory picker (`n`) lists zoxide directories, switches to a session whose path matches the selection, and otherwise creates a session named after the directory, adding `-2`, `-3`, … on name collisions. Absolute paths, `~`/`~/...`, and explicit `.`/`./...` or `..`/`../...` queries are opened directly; other text is fuzzy-matched against the listed directories, so a query such as `.pi/agent` can select the displayed `~/.pi/agent` row. `Esc` returns to the agent picker. The picker does not remove directories from zoxide; run `zoxide remove <directory>` yourself.
 
 ### Detected agents
 
