@@ -367,8 +367,10 @@ session_id_for_pane() {
 }
 
 current_session_id() {
-  local target=${TMUX_PANE:-}
-  if [[ -n $target ]]; then
+  local client=${1:-} target=${TMUX_PANE:-}
+  if [[ -n $client ]]; then
+    "$TMUX_BIN" display-message -p -t "$client" '#{session_id}' 2>/dev/null || true
+  elif [[ -n $target ]]; then
     session_id_for_pane "$target"
   else
     "$TMUX_BIN" display-message -p '#{session_id}' 2>/dev/null || true
@@ -387,20 +389,23 @@ current_pane_for_client() {
 # Kill the session owning the pane under the cursor. Always returns 0: it runs
 # from an fzf binding that continues with a reload.
 kill_session_for_pane() {
-  local pane=${1:-} session_id session_name current answer
+  local pane=${1:-} client='' session_id session_name current answer
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case $1 in
+      --client)
+        if (( $# >= 2 )); then client=$2; shift 2; else client=''; shift; fi
+        ;;
+      *) shift ;;
+    esac
+  done
   [[ -n $pane ]] || return 0
   session_id=$(session_id_for_pane "$pane")
   [[ -n $session_id ]] || return 0
   session_name=$("$TMUX_BIN" display-message -p -t "$session_id" '#{session_name}' 2>/dev/null || true)
   [[ -n $session_name ]] || session_name=$session_id
 
-  current=$(current_session_id)
-  if [[ -n $current && $session_id == "$current" ]]; then
-    tty_write 'agent-picker: refusing to kill the current session (%s)\n' "$session_name"
-    tty_write 'press any key to return'
-    read_tty_key >/dev/null
-    return 0
-  fi
+  current=$(current_session_id "$client")
 
   tty_write 'kill session %s? [y/N] ' "$session_name"
   answer=$(read_tty_key)
@@ -411,6 +416,17 @@ kill_session_for_pane() {
       return 0
       ;;
   esac
+
+  # Move this client first so killing its current session leaves it on the
+  # following session. With no next session, tmux will simply reject the
+  # switch and the requested kill still proceeds.
+  if [[ -n $current && $session_id == "$current" ]]; then
+    if [[ -n $client ]]; then
+      "$TMUX_BIN" switch-client -c "$client" -n >/dev/null 2>&1 || true
+    else
+      "$TMUX_BIN" switch-client -n >/dev/null 2>&1 || true
+    fi
+  fi
 
   if "$TMUX_BIN" kill-session -t "$session_id" >/dev/null 2>&1; then
     tty_write '\nkilled session %s\n' "$session_name"
@@ -551,7 +567,7 @@ interactive() {
     --border-label="$border_label" --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='right:50%,follow' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
-    --bind "x:execute($root_q/bin/agent-pick --kill {1})+transform($root_q/bin/agent-pick --reload-action --client $client_q)" \
+    --bind "x:execute($root_q/bin/agent-pick --kill {1} --client $client_q)+transform($root_q/bin/agent-pick --reload-action --client $client_q)" \
     --bind "tab:transform($root_q/bin/agent-pick --toggle-action --client $client_q)" \
     --bind "/:transform($root_q/bin/agent-pick --filter-action)" \
     --bind 'j:down,k:up' \
@@ -606,7 +622,8 @@ case "${1:-}" in
     coloured_agents "$(current_pane_for_client "$PICKER_CLIENT")" "$PICKER_ORDER"
     ;;
   --kill)
-    kill_session_for_pane "${2:-}"
+    shift
+    kill_session_for_pane "$@"
     ;;
   --go)
     pane=${2:-}

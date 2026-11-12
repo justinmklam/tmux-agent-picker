@@ -663,15 +663,47 @@ done
 }
 ok '(o2) reload drops the killed session row'
 
-# (o3) the session running the picker is protected from the kill key.
-tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'refusing to kill the current session' || fail '(o3) refuses to kill the current session'
-ok '(o3) refuses to kill the current session'
-tmux_cmd send-keys -t "$KILLER" z
-wait_for_normal "$KILLER" || fail '(o3) returns to the picker after refusing'
-[[ -n $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- ap-test || true) ]] || fail '(o3) keeps the current session'
-ok '(o3) keeps the current session'
-tmux_cmd send-keys -t "$KILLER" q
+# (o3) x confirms and kills the session currently selected by the picker client,
+# moving that client to the next session first.
+CLOSE_CURRENT_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s close-current -c "$TMP_ROOT" 'exec sleep 3600')
+CLOSE_NEXT_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s close-next -c "$TMP_ROOT" 'exec sleep 3600')
+run_state "$CLOSE_CURRENT_PANE" set pi blocked
+run_state "$CLOSE_NEXT_PANE" set pi idle
+script -q /dev/null tmux -L "$SERVER" attach-session -t close-current >/dev/null 2>&1 &
+CLIENT_SCRIPT_PID=$!
+CLOSE_CLIENT=''
+for _ in $(seq 1 100); do
+  CLOSE_CLIENT=$(tmux_cmd list-clients -F '#{client_name} #{session_name}' 2>/dev/null | \
+    awk '$2 == "close-current" { print $1; exit }' || true)
+  [[ -n $CLOSE_CLIENT ]] && break
+  sleep 0.05
+done
+[[ -n $CLOSE_CLIENT ]] || fail '(o3) close-current client did not attach'
+CURRENT_KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-current-killer "exec \"$INSTALL_ROOT/bin/agent-pick\" --client \"$CLOSE_CLIENT\"")
+wait_for "$CURRENT_KILLER" 'Enter go' || fail '(o3) current-session picker did not start'
+tmux_cmd send-keys -t "$CURRENT_KILLER" x
+wait_for "$CURRENT_KILLER" 'kill session close-current? [y/N]' || fail '(o3) prompts before killing the current session'
+tmux_cmd send-keys -t "$CURRENT_KILLER" n
+wait_for_normal "$CURRENT_KILLER" || fail '(o3) declining current-session deletion returns to the picker'
+assert_eq close-current "$(tmux_cmd display-message -p -t "$CLOSE_CLIENT" '#{session_name}')" \
+  '(o3) declining keeps the current client session'
+ok '(o3) declining keeps the current client session'
+tmux_cmd send-keys -t "$CURRENT_KILLER" x
+wait_for "$CURRENT_KILLER" 'kill session close-current? [y/N]' || fail '(o3) prompts again for the current session'
+tmux_cmd send-keys -t "$CURRENT_KILLER" y
+for i in $(seq 1 100); do
+  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- close-current || true) ]] && break
+  sleep 0.05
+done
+assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- close-current || true)" \
+  '(o3) confirmation kills the current session'
+assert_eq close-next "$(tmux_cmd display-message -p -t "$CLOSE_CLIENT" '#{session_name}')" \
+  '(o3) moves the client to the next session'
+wait_for_normal "$CURRENT_KILLER" || fail '(o3) picker stays open after current-session deletion'
+ok '(o3) current-session deletion returns the client to the next session'
+tmux_cmd send-keys -t "$CURRENT_KILLER" q
+tmux_cmd kill-session -t close-next
+CLIENT_SCRIPT_PID=''
 
 tmux_cmd send-keys -t "$PICKER" /
 wait_for "$PICKER" 'type to filter' || fail '(p) filter mode did not open'

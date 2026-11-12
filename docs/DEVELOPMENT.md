@@ -113,7 +113,7 @@ Keys:
 | `j` / `k` or Up/Down | Move the cursor down / up; navigation wraps at either end. |
 | `Tab` | Toggle between the default state/newest order and alphabetical session/newest-within-session order; the mode is picker-local. |
 | `n` | Open the directory picker and switch to or create that session. |
-| `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. The session running the picker is refused so the popup cannot destroy itself. |
+| `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. If the selected session is the one attached to the picker client, the client switches to the next session before the kill. |
 | `/` | Enter filter mode; `n` and `x` type normally there. Typing restarts the cursor at the first row. |
 | `q` / `Esc` | Close the picker. `Esc` first clears the query and leaves filter mode. |
 
