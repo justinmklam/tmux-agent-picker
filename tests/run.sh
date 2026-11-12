@@ -266,6 +266,8 @@ CURRENT_FIRST=$(TMUX_PANE="${ORDER_PANES[4]}" "$ROOT/bin/agent-pick" --list | he
 assert_eq "${ORDER_PANES[4]}" "$CURRENT_FIRST" '(g2) puts the current pane first'
 
 CURRENT_CONTEXT_SHELL=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s current-context -c "$TMP_ROOT" 'exec sh')
+CURRENT_CONTEXT_AGENT=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t current-context: -n agent 'exec sleep 3600')
+run_state "$CURRENT_CONTEXT_AGENT" set pi done
 CURRENT_OTHER_AGENT=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s other-context -c "$TMP_ROOT" 'exec sleep 3600')
 run_state "$CURRENT_OTHER_AGENT" set pi blocked
 CURRENT_CONTEXT_LIST=$(TMUX_PANE="$CURRENT_CONTEXT_SHELL" "$ROOT/bin/agent-pick" --list)
@@ -316,6 +318,9 @@ tmux_cmd select-window -t plain-session:plain-second
 PLAIN_ACTIVE_PANE=$(tmux_cmd display-message -p -t plain-session '#{pane_id}')
 PLAIN_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
 assert_eq 1 "$(printf '%s\n' "$PLAIN_LIST" | grep -c 'session plain-session' || true)" '(h2) lists an uninstrumented session once'
+PLAIN_CURRENT_LIST=$(TMUX_PANE="$PLAIN_ACTIVE_PANE" "$ROOT/bin/agent-pick" --list)
+assert_eq "$PLAIN_ACTIVE_PANE" "$(printf '%s\n' "$PLAIN_CURRENT_LIST" | head -n 1 | cut -f1)" \
+  '(h2) puts the current uninstrumented session first'
 assert_eq 1 "$(printf '%s\n' "$PLAIN_LIST" | grep -F -c "$PLAIN_ACTIVE_PANE"$'\tsession plain-session' || true)" '(h2) targets the active pane of an uninstrumented session'
 assert_eq 0 "$(printf '%s\n' "$PLAIN_LIST" | grep -c 'session ap-test' || true)" '(h2) does not duplicate a stateful session'
 # The private server has no attached tty client; client-qualified switching is

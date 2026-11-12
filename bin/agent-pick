@@ -207,6 +207,7 @@ list_agents() {
       session_pane=$(active_pane_for_session "$session_id")
       [[ -n $session_pane ]] || continue
       current_rank=1
+      [[ -n $current_pane && $session_pane == "$current_pane" ]] && current_rank=0
       printf '%s\t4\t0\t%s\t%s\t%s\tsession %s\n' "$current_rank" "$session_pane" "$session_pane" "$session_name" "$session_name"
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
