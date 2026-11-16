@@ -450,6 +450,24 @@ EXPECTED_SESSION_ROWS=$(printf '%s\n' \
   'idle:order-alpha' 'blocked:order-alpha' 'session:order-beta' \
   'working:order-zulu' 'done:order-zulu')
 assert_eq "$EXPECTED_SESSION_ROWS" "$SESSION_ROWS" '(o-order) groups rows by alphabetical session and newest first'
+
+# (o-order-related) the current session's numeric-name family stays together.
+RELATED_CURRENT=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli-2 -c "$TMP_ROOT" 'exec sleep 3600')
+RELATED_BASE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli -c "$TMP_ROOT" 'exec sleep 3600')
+RELATED_THREE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli-3 -c "$TMP_ROOT" 'exec sleep 3600')
+RELATED_PREFIX=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cja -c "$TMP_ROOT" 'exec sleep 3600')
+for pane in "$RELATED_CURRENT" "$RELATED_BASE" "$RELATED_THREE" "$RELATED_PREFIX"; do
+  run_state "$pane" set pi idle
+done
+RELATED_SESSION_ROWS=$(TMUX_PANE="$RELATED_CURRENT" "$ROOT/bin/agent-pick" --rows --order session | \
+  sed -E $'s/\\033\\[[0-9;]*m//g' | \
+  awk -F '\\t' '$2 ~ /^up-dev-cli(-[0-9]+)?$/ || $2 == "up-dev-cja" { print $2 }')
+EXPECTED_RELATED_SESSION_ROWS=$(printf '%s\n' \
+  'up-dev-cli-2' 'up-dev-cli' 'up-dev-cli-3' 'up-dev-cja')
+assert_eq "$EXPECTED_RELATED_SESSION_ROWS" "$RELATED_SESSION_ROWS" \
+  '(o-order-related) groups current session family first and current session first'
+ok '(o-order-related) groups current session family first and current session first'
+
 SESSION_CURRENT_FIRST=$(TMUX_PANE="$ORDER_ZULU_OLD" "$ROOT/bin/agent-pick" --rows --order session | head -n 1 | cut -f1)
 assert_eq "$ORDER_ZULU_OLD" "$SESSION_CURRENT_FIRST" '(o-order) keeps current pane first in session order'
 SESSION_RELOAD_ACTION=$(FZF_PROMPT=session-order "$ROOT/bin/agent-pick" --reload-action --client test-client)
@@ -461,7 +479,7 @@ TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --order
 assert_eq 0 "$?" '(o-order) missing order value does not hang'
 TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --client
 assert_eq 0 "$?" '(o-order) missing client value does not hang'
-for session in order-alpha order-beta order-zulu; do
+for session in order-alpha order-beta order-zulu up-dev-cli up-dev-cli-2 up-dev-cli-3 up-dev-cja; do
   tmux_cmd kill-session -t "$session"
 done
 
