@@ -126,7 +126,7 @@ The directory picker (`n`) lists zoxide directories, switches to a session whose
 A pane without any `@ap_state` value is inspected for an agent process, so agents that have no lifecycle integration still appear in the list. One `ps -A -o pid=,ppid=,command=` snapshot serves the whole listing, and detection tries three sources in order:
 
 1. `#{pane_current_command}` — the foreground process name, which matches native binaries such as `claude`.
-2. The pane's command line from the snapshot, which matches shims such as `node …/codex/bin/codex.js`.
+2. The pane's own command line from the snapshot, which matches shims such as `node …/codex/bin/codex.js`.
 3. Processes below the pane PID, stopping two levels down, which matches shell wrappers that `exec` or background an agent.
 
 Each source is split on whitespace and `/`, and a token is compared exactly against the agent name list after stripping a trailing `.js`, `.mjs`, `.cjs`, `.py`, or `.exe`. The built-in list is `claude codex copilot agy gemini aider opencode goose crush cursor-agent`. Extend or replace it with a tmux option:
@@ -151,7 +151,7 @@ A detected pane is reported as `idle` with an age of `-`, because no process wro
 - Detection cannot report `blocked`, `working`, or `done`, and it has no age. Install a lifecycle integration for accurate state.
 - A path or argument token that happens to equal an agent name can produce a false positive; narrow `@ap_detect_agents` to a plain list so only the names you trust are detected.
 - Without `ps`, only `#{pane_current_command}` is matched; command-line and child-process detection are skipped.
-- Detection runs only for panes without `@ap_state`, and the process snapshot is taken once per listing, so the cost stays near one `ps` call regardless of pane count. `@ap_detect_agents 'off'` removes even that call.
+- Detection runs only for panes without `@ap_state`, and the process snapshot is taken once per listing, so the cost stays near one `ps` call regardless of pane count. The tree walk itself runs in a single `awk` pass that emits only the wanted panes' own command lines and their descendants, so `bin/agent-pick` never reads the whole process table into the shell. `@ap_detect_agents 'off'` removes even the `ps` call.
 
 For agents whose process name never appears, see the wrapper-script fallback in [AGENT_SUPPORT.md](AGENT_SUPPORT.md#agents-without-hooks).
 

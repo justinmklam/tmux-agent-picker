@@ -12,8 +12,43 @@ EMPTY_SESSION_FOOTER='Tab state order  no agents  Enter  n  /  j/k  q/Esc'
 DEFAULT_BORDER_LABEL=' agents · Tab sess '
 SESSION_BORDER_LABEL=' agents · Tab state '
 
-theme_option() {
-  "$TMUX_BIN" show-options -gv "$1" 2>/dev/null || true
+AP_DETECT_AGENTS=''
+AP_SESSION_COLORS=''
+AP_FZF_COLORS=''
+AP_THEME_LOADED=0
+
+# One tmux call covers every themed user option the pickers read, because each
+# call costs a few milliseconds of latency the popup pays on first paint. Only
+# global options are read, so a session-scoped override cannot change the picker
+# midway through a client's listing.
+load_theme_options() {
+  local dump line name value
+  (( AP_THEME_LOADED )) && return 0
+  AP_THEME_LOADED=1
+  dump=$("$TMUX_BIN" show-options -g 2>/dev/null || true)
+  while IFS= read -r line; do
+    case $line in
+      '@ap_detect_agents '*) name=@ap_detect_agents ;;
+      '@ap_session_colors '*) name=@ap_session_colors ;;
+      '@ap_fzf_colors '*) name=@ap_fzf_colors ;;
+      *) continue ;;
+    esac
+    value=${line#* }
+    # tmux quotes a value that needs it; undo the quoting it applied.
+    case $value in
+      \"*\")
+        value=${value#\"}
+        value=${value%\"}
+        value=${value//\\\"/\"}
+        value=${value//\\\\/\\}
+        ;;
+    esac
+    case $name in
+      @ap_detect_agents) AP_DETECT_AGENTS=$value ;;
+      @ap_session_colors) AP_SESSION_COLORS=$value ;;
+      @ap_fzf_colors) AP_FZF_COLORS=$value ;;
+    esac
+  done <<< "$dump"
 }
 
 DEFAULT_AGENT_NAMES='claude codex copilot agy gemini aider opencode goose crush cursor-agent'
@@ -21,12 +56,10 @@ DEFAULT_AGENT_NAMES='claude codex copilot agy gemini aider opencode goose crush 
 # Detection state, filled once per listing so no per-pane process is spawned.
 AGENT_NAMES=''
 AGENT_MATCH=''
-DETECTED_AGENT=''
-PROC_TABLE_LOADED=0
-PROC_PIDS=''
-PROC_PARENT=()
-PROC_COMMAND=()
-PROC_PARENTS=''
+DETECTED_PID=()
+DETECT_CMDS=()
+SESSION_ACTIVE_KEYS=()
+SESSION_ACTIVE_VALS=()
 SESSION_COLOURS=()
 NOW=0
 
@@ -53,7 +86,8 @@ age_for() {
 # built-in list with the names that follow it, so `+mytool` keeps the defaults.
 agent_names() {
   local names
-  names=$(theme_option @ap_detect_agents)
+  load_theme_options
+  names=$AP_DETECT_AGENTS
   case $names in
     [Oo][Ff][Ff]) return 0 ;;
     '' | [Oo][Nn]) printf '%s' "$DEFAULT_AGENT_NAMES" ;;
@@ -90,77 +124,72 @@ match_agent_token() {
   return 1
 }
 
-# Take one process snapshot per listing. Detection then costs no process spawns,
-# which matters because a listing walks every pane. Indexed arrays keyed by pid
-# keep this compatible with the bash 3.2 that macOS ships.
-load_process_table() {
-  local pid ppid rest
-  (( PROC_TABLE_LOADED )) && return 0
-  PROC_TABLE_LOADED=1
-  while read -r pid ppid rest; do
-    case $pid$ppid in
-      '' | *[!0-9]*) continue ;;
-    esac
-    PROC_PIDS+=" $pid"
-    PROC_PARENT[$pid]=$ppid
-    PROC_COMMAND[$pid]=$rest
-    PROC_PARENTS+=" $ppid"
-  done < <(ps -A -o pid=,ppid=,command= 2>/dev/null || true)
-  [[ -n $PROC_PIDS ]]
+# Emit "pane_pid<TAB>pid<TAB>command" for the pane's own process and every
+# process up to two levels below it, depth first. The walk runs in awk so bash
+# never reads the whole process table: on a busy machine that is the largest
+# cost in a listing.
+SUBTREE_AWK='
+BEGIN { n = split(want_pids, P, " "); for (i = 1; i <= n; i++) want[P[i]] = 1 }
+{
+  line = $0
+  sub(/^[ \t]+/, "", line)
+  pid = line; sub(/[ \t].*$/, "", pid)
+  rest = line; sub(/^[0-9]+[ \t]+/, "", rest)
+  ppid = rest; sub(/[ \t].*$/, "", ppid)
+  cmd = rest; sub(/^[0-9]+[ \t]+/, "", cmd)
+  if (pid == "" || ppid == "") next
+  kids[ppid] = kids[ppid] " " pid
+  cmdof[pid] = cmd
 }
+END {
+  for (i = 1; i <= n; i++) {
+    if (P[i] in cmdof) printf "%s\t%s\t%s\n", P[i], P[i], cmdof[P[i]]
+    cnt = split(kids[P[i]], a, " ")
+    for (j = 1; j <= cnt; j++) {
+      printf "%s\t%s\t%s\n", P[i], a[j], cmdof[a[j]]
+      cnt2 = split(kids[a[j]], b, " ")
+      for (k = 1; k <= cnt2; k++) printf "%s\t%s\t%s\n", P[i], b[k], cmdof[b[k]]
+    }
+  }
+}'
 
-# Look for an agent name in this process and, up to two levels below the pane,
-# in its children. Sets AGENT_MATCH. Shell wrappers and shims hide the agent
-# name this way.
-process_has_agent() {
-  local pid=$1 depth=$2 child
-  match_agent_token "${PROC_COMMAND[$pid]:-}" && return 0
-  (( depth >= 2 )) && return 1
-  # Skipping childless processes keeps most panes off the full scan below.
-  case " $PROC_PARENTS " in
-    *" $pid "*) ;;
-    *) return 1 ;;
-  esac
-  for child in $PROC_PIDS; do
-    [[ ${PROC_PARENT[$child]:-} == "$pid" ]] || continue
-    process_has_agent "$child" $((depth + 1)) && return 0
+# Take one process snapshot per listing and resolve every pending pane in a
+# single pass, so detection costs one ps call however many panes need it. The
+# pane's own command line comes from the same snapshot, which is how shims such
+# as `node …/codex/bin/codex.js` are matched. Sets DETECTED_PID[pid]; a missing
+# ps or an unreadable process simply reports no match and never fails the
+# listing.
+#
+# The caller owns DETECTED_PID and initialises it before recording the panes a
+# foreground command name already explained, so this function only adds to it.
+resolve_detected_agents() {
+  local pending=${1:-} from pid cmd line pane_pid
+  DETECT_CMDS=()
+  [[ -n $pending ]] || return 0
+  while IFS=$'\t' read -r from pid cmd; do
+    [[ -n $from ]] || continue
+    DETECT_CMDS[$from]+="$cmd"$'\n'
+  done < <(ps -A -o pid=,ppid=,command= 2>/dev/null | awk -v want_pids="$pending" "$SUBTREE_AWK" 2>/dev/null || true)
+  for pane_pid in $pending; do
+    [[ -n ${DETECT_CMDS[$pane_pid]:-} ]] || continue
+    while IFS= read -r line; do
+      [[ -n $line ]] || continue
+      if match_agent_token "$line"; then
+        DETECTED_PID[$pane_pid]=$AGENT_MATCH
+        break
+      fi
+    done <<< "${DETECT_CMDS[$pane_pid]}"
   done
-  return 1
-}
-
-# Best-effort detection for a pane with no reported state. Sets DETECTED_AGENT
-# and never fails the listing: a missing ps or an unreadable process simply
-# reports no match.
-detect_agent_for_pane() {
-  local pid=${1:-} command=${2:-}
-  DETECTED_AGENT=''
-  [[ -n $AGENT_NAMES ]] || return 1
-  if match_agent_token "${command:-}"; then
-    DETECTED_AGENT=$AGENT_MATCH
-    return 0
-  fi
-  [[ -n $pid ]] || return 1
-  case $pid in
-    *[!0-9]*) return 1 ;;
-  esac
-  load_process_table || return 1
-  process_has_agent "$pid" 0 || return 1
-  DETECTED_AGENT=$AGENT_MATCH
-}
-
-active_pane_for_session() {
-  local session=$1 pane
-  pane=$($TMUX_BIN display-message -p -t "$session" '#{pane_id}' 2>/dev/null || true)
-  printf '%s' "$pane"
 }
 
 list_agents() {
   local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0} sort_order=${3:-state}
   local pane state since agent session session_id window pane_index command title pid
-  local tier age display current_rank
-  local session_pane sessions_with_agents=''
+  local tier age display current_rank window_active pane_active
+  local panes session_pane sessions_with_agents='' pending=''
+  local session_count=0 i
   local -a sort_args
-  local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}'
+  local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}\x1f#{window_active}\x1f#{pane_active}'
   case "$sort_order" in
     session) sort_args=(-k1,1n -k6,6 -k3,3nr -k4,4 -k5,5) ;;
     *) sort_order=state; sort_args=(-k1,1n -k2,2n -k3,3nr -k4,4 -k5,5) ;;
@@ -168,16 +197,45 @@ list_agents() {
   {
     AGENT_NAMES=$(agent_names)
     NOW=$(date +%s)
-    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid; do
+    # One pane snapshot serves detection, the emit loop, and the session
+    # fallback, so no phase needs another tmux round trip.
+    panes=$($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
+
+    DETECTED_PID=()
+    SESSION_ACTIVE_KEYS=()
+    SESSION_ACTIVE_VALS=()
+    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid window_active pane_active; do
+      [[ -n $pane ]] || continue
+      if [[ ${window_active:-} == 1 && ${pane_active:-} == 1 ]]; then
+        SESSION_ACTIVE_KEYS[$session_count]=$session_id
+        SESSION_ACTIVE_VALS[$session_count]=$pane
+        session_count=$((session_count + 1))
+      fi
+      [[ -n $state ]] && continue
+      [[ -n $AGENT_NAMES ]] || continue
+      # A foreground process name is the cheapest signal, so resolve it here and
+      # keep the process snapshot for panes it cannot explain.
+      if match_agent_token "$command"; then
+        DETECTED_PID[$pid]=$AGENT_MATCH
+        continue
+      fi
+      case $pid in
+        '' | *[!0-9]*) continue ;;
+      esac
+      pending+=" $pid"
+    done <<< "$panes"
+
+    resolve_detected_agents "$pending"
+
+    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid window_active pane_active; do
       [[ -n $pane ]] || continue
       current_rank=1
       [[ -n $current_pane && $pane == "$current_pane" ]] && current_rank=0
       # A pane without state may still be an agent: detected agents cannot
       # report working, blocked, or done, so they enter the idle tier.
       if [[ -z $state ]]; then
-        detect_agent_for_pane "$pid" "$command"
-        if [[ -n $DETECTED_AGENT ]]; then
-          display="idle"$'\t'"$DETECTED_AGENT"$'\t'"$session:$window.$pane_index"$'\t'"-"$'\t'"$title"
+        if [[ -n ${DETECTED_PID[$pid]:-} ]]; then
+          display="idle"$'\t'"${DETECTED_PID[$pid]}"$'\t'"$session:$window.$pane_index"$'\t'"-"$'\t'"$title"
           printf '%s\t3\t0\t%s\t%s\t%s\t%s\n' "$current_rank" "$pane" "$pane" "$session" "$display"
           sessions_with_agents+=" $session_id"
           continue
@@ -197,14 +255,21 @@ list_agents() {
       display="$state"$'\t'"$agent"$'\t'"$session:$window.$pane_index"$'\t'"$age"$'\t'"$title"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$current_rank" "$tier" "${since:-0}" "$pane" "$pane" "$session" "$display"
       sessions_with_agents+=" $session_id"
-    done < <($TMUX_BIN list-panes -a -F "$format" 2>/dev/null || true)
+    done <<< "$panes"
 
     while IFS=$'\x1f' read -r session_id session_name; do
       [[ -n $session_id && -n $session_name ]] || continue
       case " $sessions_with_agents " in
         *" $session_id "*) continue ;;
       esac
-      session_pane=$(active_pane_for_session "$session_id")
+      # The snapshot already knows each session's active pane, so the fallback
+      # row needs no extra tmux lookup.
+      session_pane=''
+      for ((i = 0; i < session_count; i++)); do
+        [[ ${SESSION_ACTIVE_KEYS[$i]} == "$session_id" ]] || continue
+        session_pane=${SESSION_ACTIVE_VALS[$i]}
+        break
+      done
       [[ -n $session_pane ]] || continue
       current_rank=1
       [[ -n $current_pane && $session_pane == "$current_pane" ]] && current_rank=0
@@ -263,7 +328,8 @@ load_session_colours() {
   local configured token red green blue colour
   local -a tokens
   SESSION_COLOURS=()
-  configured=$(theme_option @ap_session_colors)
+  load_theme_options
+  configured=$AP_SESSION_COLORS
   IFS=$' \t\n' read -ra tokens <<< "$configured"
   (( ${#tokens[@]} > 0 )) || return 0
   for token in "${tokens[@]}"; do
@@ -440,6 +506,9 @@ kill_session_for_pane() {
 }
 
 coloured_agents() {
+  # Load once so both pipeline subshells inherit the cached values instead of
+  # each paying a tmux round trip.
+  load_theme_options
   list_agents "${1:-}" 1 "${2:-state}" | colour_agents
 }
 
@@ -552,13 +621,16 @@ interactive() {
   client_q=$(client_quote "$client")
   root_q=$(printf '%q' "$ROOT")
   current_pane=$(current_pane_for_client "$client")
+  # Load before the command substitution so the listing subshell inherits the
+  # cached values instead of fetching them a second time.
+  load_theme_options
   agents=$(list_agents "$current_pane" 1 state)
   footer=$NORMAL_FOOTER
   border_label=$DEFAULT_BORDER_LABEL
   if ! has_agent_rows "$agents"; then
     footer=$EMPTY_FOOTER
   fi
-  theme=$(theme_option @ap_fzf_colors)
+  theme=$AP_FZF_COLORS
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
@@ -615,6 +687,7 @@ case "${1:-}" in
   --list)
     shift
     parse_picker_args "$@"
+    load_theme_options
     list_agents "$(current_pane_for_client "$PICKER_CLIENT")" 0 "$PICKER_ORDER"
     ;;
   --rows)

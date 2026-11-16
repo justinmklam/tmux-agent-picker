@@ -987,6 +987,61 @@ assert_eq 'idle codex -' \
   "$(printf '%s\n' "$DETECTED" | awk -v p="$CODEX_DEPTH_PANE" '$1 == p { print $2, $3, $5 }')" \
   '(v) detects an agent in a child process'
 
+# Detection looks two levels below the pane, so a grandchild agent is reported.
+DEPTH2_OUTER="$TMP_ROOT/depth2-outer"
+DEPTH2_INNER="$TMP_ROOT/depth2-inner"
+DEPTH2_RUN="$TMP_ROOT/@openai/codex/bin/depth2.js"
+printf 'setTimeout(function () {}, 60000)\n' > "$DEPTH2_RUN"
+printf '#!/bin/sh\nnode "%s" & wait\n' "$DEPTH2_RUN" > "$DEPTH2_INNER"
+printf '#!/bin/sh\nsh "%s" & wait\n' "$DEPTH2_INNER" > "$DEPTH2_OUTER"
+chmod +x "$DEPTH2_OUTER" "$DEPTH2_INNER"
+DEPTH2_PANE=$(new_pane codex-depth2 "exec $DEPTH2_OUTER")
+# Wait for the process chain itself: this platform reports the resolved binary
+# name, so the pane command is not a reliable fixture signal.
+DEPTH2_STARTED=''
+for _ in $(seq 1 100); do
+  if pgrep -f "$DEPTH2_RUN" >/dev/null 2>&1; then
+    DEPTH2_STARTED=1
+    break
+  fi
+  sleep 0.05
+done
+[[ -n $DEPTH2_STARTED ]] || fail '(v9) grandchild fixture never reached its agent'
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle codex -' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$DEPTH2_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v9) detects an agent two levels below the pane'
+tmux_cmd kill-pane -t "$DEPTH2_PANE" >/dev/null 2>&1 || true
+
+# A third level is out of scope, so the agent stays hidden behind its shell.
+DEPTH3_OUTER="$TMP_ROOT/depth3-outer"
+DEPTH3_MIDDLE="$TMP_ROOT/depth3-middle"
+DEPTH3_INNER="$TMP_ROOT/depth3-inner"
+DEPTH3_RUN="$TMP_ROOT/@openai/codex/bin/depth3.js"
+printf 'setTimeout(function () {}, 60000)\n' > "$DEPTH3_RUN"
+printf '#!/bin/sh\nnode "%s" & wait\n' "$DEPTH3_RUN" > "$DEPTH3_INNER"
+printf '#!/bin/sh\nsh "%s" & wait\n' "$DEPTH3_INNER" > "$DEPTH3_MIDDLE"
+printf '#!/bin/sh\nsh "%s" & wait\n' "$DEPTH3_MIDDLE" > "$DEPTH3_OUTER"
+chmod +x "$DEPTH3_OUTER" "$DEPTH3_MIDDLE" "$DEPTH3_INNER"
+DEPTH3_PANE=$(new_pane codex-depth3 "exec $DEPTH3_OUTER")
+DEPTH3_STARTED=''
+for _ in $(seq 1 100); do
+  if pgrep -f "$DEPTH3_RUN" >/dev/null 2>&1; then
+    DEPTH3_STARTED=1
+    break
+  fi
+  sleep 0.05
+done
+[[ -n $DEPTH3_STARTED ]] || fail '(v10) deep fixture never reached its agent'
+DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+# Guard against a vacuous pass from an empty or failing listing.
+assert_eq 'idle codex -' \
+  "$(printf '%s\n' "$DETECTED" | awk -v p="$CODEX_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v10) still lists the known agent while the deep pane stays hidden'
+assert_eq '' "$(printf '%s\n' "$DETECTED" | awk -v p="$DEPTH3_PANE" '$1 == p')" \
+  '(v10) ignores an agent three levels below the pane'
+tmux_cmd kill-pane -t "$DEPTH3_PANE" >/dev/null 2>&1 || true
+
 NODE_PANE=$(new_pane node-plain "exec node -e 'setTimeout(function () {}, 60000)'")
 wait_for_command "$NODE_PANE" node || fail '(v) plain node fixture did not start'
 DETECTED=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
@@ -1043,6 +1098,32 @@ tmux_cmd set-option -gu @ap_detect_agents
 assert_eq 'idle claude -' \
   "$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk -v p="$CLAUDE_PANE" '$1 == p { print $2, $3, $5 }')" \
   '(v6) detection returns after unsetting the option'
+
+# Several panes need process inspection here, so a listing that read the table
+# once per pane would call ps more than once.
+: > "$PS_LOG"
+PS_LIST=$(PATH="$PS_SHIM_DIR:$PATH" TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 1 "$(wc -c < "$PS_LOG" | tr -d ' ')" '(v11) reads the process table once per listing'
+assert_eq 'idle codex -' \
+  "$(printf '%s\n' "$PS_LIST" | awk -v p="$CODEX_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v11) resolves detected rows from that single snapshot'
+
+# (v12) a foreground command name is matched with no process inspection at all.
+# Configuring a name that is the real foreground command makes this portable:
+# tests cannot rely on a symlinked agent reporting its own name.
+tmux_cmd set-option -g @ap_detect_agents 'sleep'
+NAMED_PANE=$(new_pane native-name 'exec sleep 3600')
+wait_for_command "$NAMED_PANE" sleep || fail '(v12) named fixture did not start'
+NO_PS_DIR="$TMP_ROOT/no-ps"
+mkdir -p "$NO_PS_DIR"
+printf '#!/bin/sh\nexit 1\n' > "$NO_PS_DIR/ps"
+chmod +x "$NO_PS_DIR/ps"
+NAMED_LIST=$(PATH="$NO_PS_DIR:$PATH" TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_eq 'idle sleep -' \
+  "$(printf '%s\n' "$NAMED_LIST" | awk -v p="$NAMED_PANE" '$1 == p { print $2, $3, $5 }')" \
+  '(v12) detects a pane from its command name without ps'
+tmux_cmd set-option -gu @ap_detect_agents
+tmux_cmd kill-pane -t "$NAMED_PANE" >/dev/null 2>&1 || true
 
 # (v7) 'on' restores the default name list without unsetting the option.
 tmux_cmd set-option -g @ap_detect_agents 'on'
