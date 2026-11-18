@@ -224,7 +224,15 @@ assert_match "$WT_PANE"$'\t[^\n]* ap-test:wt/other ' "$BRANCH_LIST" '(a2) linked
 git -C "$BRANCH_REPO" branch -q long-branch-name-for-truncation-check-0123456789
 git -C "$BRANCH_REPO" checkout -q long-branch-name-for-truncation-check-0123456789
 LONG_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
-assert_match ' ap-test:long-branch-name-for-trun[.][.][.] ' "$LONG_ROW" '(a2) truncates long branch names'
+assert_match ' ap-test:long-branch-name-for-truncati[.][.][.] ' "$LONG_ROW" '(a2) caps the location column at 40 characters by default'
+CAPPED_ROW=$(TMUX_PANE= AP_LOCATION_MAX=20 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
+assert_match ' ap-test:long-bran[.][.][.] ' "$CAPPED_ROW" '(a2) caps the whole location column with an ellipsis'
+SESSION_CAPPED_ROW=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
+assert_match ' ap-[.][.][.]:long-branch-name-' "$SESSION_CAPPED_ROW" '(a2) truncates long session names in the location column'
+SESSION_CAPPED_META=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --rows | grep -F "$SUB_PANE" | head -n 1)
+assert_match $'\t'"ap-test"$'\t' "$SESSION_CAPPED_META" '(a2) session cap keeps the full session name for filtering'
+CAPPED_META=$(TMUX_PANE= AP_LOCATION_MAX=3 "$ROOT/bin/agent-pick" --rows | sed -E $'s/\033\\[[0-9;]*m//g' | grep -F "$SUB_PANE" | head -n 1)
+assert_match "$SUB_PANE" "$CAPPED_META" '(a2) tiny column cap does not break rows'
 tmux_cmd kill-window -t "$SUB_PANE"
 tmux_cmd kill-window -t "$WT_PANE"
 

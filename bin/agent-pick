@@ -211,7 +211,6 @@ git_branch_for() {
     'ref: '*) BRANCH=${line#ref: } ;;
     [0-9a-f]*) BRANCH=${line:0:7} ;;
   esac
-  ((${#BRANCH} > 28)) && BRANCH="${BRANCH:0:25}..."
   return 0
 }
 
@@ -325,7 +324,7 @@ list_agents() {
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
     LC_ALL=C sort -t $'\t' "${sort_args[@]}" |
-    awk -v metadata="$metadata" -F '\t' '
+    awk -v metadata="$metadata" -v loc_cap="${AP_LOCATION_MAX:-40}" -v session_cap="${AP_SESSION_MAX:-24}" -F '\t' '
       {
         pane[NR] = $5
         session_name[NR] = $6
@@ -333,7 +332,12 @@ list_agents() {
           agent_row[NR] = 1
           state[NR] = $7
           agent[NR] = $8
-          location[NR] = $9
+          # The location starts with the full session name; shorten it first so
+          # the colour span below still covers exactly what is displayed.
+          session_shown[NR] = session_name[NR]
+          if (length(session_shown[NR]) > session_cap) session_shown[NR] = substr(session_shown[NR], 1, session_cap - 3) "..."
+          location[NR] = session_shown[NR] substr($9, length(session_name[NR]) + 1)
+          if (length(location[NR]) > loc_cap) location[NR] = substr(location[NR], 1, loc_cap - 3) "..."
           age[NR] = $10
           title[NR] = $11
           for (i = 12; i <= NF; i++) title[NR] = title[NR] OFS $i
@@ -347,7 +351,8 @@ list_agents() {
         for (i = 1; i <= NR; i++) {
           if (agent_row[i]) {
             if (metadata) {
-              marked_location = sprintf("%c%s%c%s", 30, session_name[i], 31, substr(location[i], length(session_name[i]) + 1))
+              shown = length(session_shown[i]) < length(location[i]) ? length(session_shown[i]) : length(location[i])
+              marked_location = sprintf("%c%s%c%s", 30, substr(location[i], 1, shown), 31, substr(location[i], shown + 1))
               printf "%s\t%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], session_name[i], state[i], max_agent, agent[i], max_location + 2, marked_location, age[i], title[i]
             } else {
               printf "%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
