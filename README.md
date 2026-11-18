@@ -1,12 +1,12 @@
 # tmux agent picker
 
-Yet another agent picker, but this one is simple and mine, and does just what I need it to do. Written in bash in just a few hundred lines of code.
+Yet another agent management tool for tmux, written in bash.
 
 ![tmux agent picker popup listing agents by state, with a pane preview](docs/screencap.png)
 
 Press `prefix + a` for a list with the current client pane first, followed by every other row in the normal state order: blocked agents at the top, then working, done, and idle, with newest rows first within each group. Press `Tab` to toggle to alphabetically sorted (`LC_ALL=C`) session groups with newest rows first within each session. `Enter` jumps to the pane. `n` opens a zoxide-backed directory picker to switch to or create a session without leaving the popup.
 
-- **See what needs attention** — state, agent, session, and age in one line per agent.
+- **See what needs attention** — state, agent, `session:branch` (or `session:window.pane` outside a git checkout), and age in one line per agent.
 - **Jump straight to the work** — selecting a row switches your client to that pane and window.
 - **Filter or clean up** — `/` filters, `x` kills the session under the cursor.
 - **Any agent** — pi reports state out of the box; other agents are detected from their process, and any agent can report state with a single command.

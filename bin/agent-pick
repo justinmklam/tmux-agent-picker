@@ -182,14 +182,60 @@ resolve_detected_agents() {
   done
 }
 
+# Resolve a directory's git branch (or short SHA when detached) into BRANCH by
+# reading HEAD directly, so listing needs no git forks. Linked worktrees and
+# submodules keep a ".git" file pointing at their real git directory.
+git_branch_for() {
+  local dir=$1 gitdir='' line=''
+  BRANCH=''
+  while [[ -n $dir ]]; do
+    if [[ -d $dir/.git ]]; then
+      gitdir=$dir/.git
+      break
+    elif [[ -f $dir/.git ]]; then
+      IFS= read -r line < "$dir/.git" || true
+      [[ $line == 'gitdir: '* ]] || return 0
+      gitdir=${line#gitdir: }
+      [[ $gitdir == /* ]] || gitdir=$dir/$gitdir
+      break
+    fi
+    [[ $dir == / ]] && return 0
+    dir=${dir%/*}
+    [[ -n $dir ]] || dir=/
+  done
+  [[ -n $gitdir ]] || return 0
+  line=''
+  IFS= read -r line < "$gitdir/HEAD" 2>/dev/null || true
+  case $line in
+    'ref: refs/heads/'*) BRANCH=${line#ref: refs/heads/} ;;
+    'ref: '*) BRANCH=${line#ref: } ;;
+    [0-9a-f]*) BRANCH=${line:0:7} ;;
+  esac
+  ((${#BRANCH} > 28)) && BRANCH="${BRANCH:0:25}..."
+  return 0
+}
+
+# Label a pane as session:branch when its directory is in a git checkout, else
+# session:window.pane.
+location_for() {
+  local session=$1 window=$2 pane_index=$3 dir=${4:-}
+  BRANCH=''
+  [[ -n $dir ]] && git_branch_for "$dir"
+  if [[ -n $BRANCH ]]; then
+    location="$session:$BRANCH"
+  else
+    location="$session:$window.$pane_index"
+  fi
+}
+
 list_agents() {
   local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0} sort_order=${3:-state}
-  local pane state since agent session session_id window pane_index command title pid
+  local pane state since agent session session_id window pane_index command title pid path location
   local tier age display current_rank window_active pane_active
   local panes session_pane sessions_with_agents='' pending=''
   local session_count=0 i
   local -a sort_args
-  local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}\x1f#{window_active}\x1f#{pane_active}'
+  local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}\x1f#{window_active}\x1f#{pane_active}\x1f#{pane_current_path}'
   case "$sort_order" in
     session) sort_args=(-k1,1n -k6,6 -k3,3nr -k4,4 -k5,5) ;;
     *) sort_order=state; sort_args=(-k1,1n -k2,2n -k3,3nr -k4,4 -k5,5) ;;
@@ -204,7 +250,7 @@ list_agents() {
     DETECTED_PID=()
     SESSION_ACTIVE_KEYS=()
     SESSION_ACTIVE_VALS=()
-    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid window_active pane_active; do
+    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid window_active pane_active path; do
       [[ -n $pane ]] || continue
       if [[ ${window_active:-} == 1 && ${pane_active:-} == 1 ]]; then
         SESSION_ACTIVE_KEYS[$session_count]=$session_id
@@ -227,7 +273,7 @@ list_agents() {
 
     resolve_detected_agents "$pending"
 
-    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid window_active pane_active; do
+    while IFS=$'\x1f' read -r pane state since agent session window pane_index command title session_id pid window_active pane_active path; do
       [[ -n $pane ]] || continue
       current_rank=1
       [[ -n $current_pane && $pane == "$current_pane" ]] && current_rank=0
@@ -235,7 +281,8 @@ list_agents() {
       # report working, blocked, or done, so they enter the idle tier.
       if [[ -z $state ]]; then
         if [[ -n ${DETECTED_PID[$pid]:-} ]]; then
-          display="idle"$'\t'"${DETECTED_PID[$pid]}"$'\t'"$session:$window.$pane_index"$'\t'"-"$'\t'"$title"
+          location_for "$session" "$window" "$pane_index" "$path"
+          display="idle"$'\t'"${DETECTED_PID[$pid]}"$'\t'"$location"$'\t'"-"$'\t'"$title"
           printf '%s\t3\t0\t%s\t%s\t%s\t%s\n' "$current_rank" "$pane" "$pane" "$session" "$display"
           sessions_with_agents+=" $session_id"
           continue
@@ -252,7 +299,8 @@ list_agents() {
         *) continue ;;
       esac
       age=$(age_for "$since")
-      display="$state"$'\t'"$agent"$'\t'"$session:$window.$pane_index"$'\t'"$age"$'\t'"$title"
+      location_for "$session" "$window" "$pane_index" "$path"
+      display="$state"$'\t'"$agent"$'\t'"$location"$'\t'"$age"$'\t'"$title"
       printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$current_rank" "$tier" "${since:-0}" "$pane" "$pane" "$session" "$display"
       sessions_with_agents+=" $session_id"
     done <<< "$panes"

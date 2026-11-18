@@ -88,7 +88,9 @@ run_bounded() {
   return 124
 }
 
-tmux_cmd() { tmux -L "$SERVER" "$@"; }
+# Run from a non-git directory: new windows inherit the invoking cwd, and git
+# checkouts label picker rows with the branch.
+tmux_cmd() { (cd "$TMP_ROOT" && tmux -L "$SERVER" "$@"); }
 
 # fzf draws the focused list line with a bold pointer and the `bg+` colour, so an
 # attribute-preserving capture can report the row under the cursor.
@@ -193,6 +195,38 @@ assert_eq "$CODEX_AGE_COL" "$PI_AGE_COL" '(a) aligns age columns'
 assert_match $'\tblocked {2}codex {2}ap-test:[0-9]+\.[0-9]+ {2}[0-9]+[smhd]' "$CODEX_ROW" '(a) pads columns with a two-space gutter'
 TMUX_PANE=$PI_PANE "$ROOT/bin/agent-state" set 'Bad Name!' working
 assert_eq pi "$(pane_option "$PI_PANE" '#{@ap_agent}')" '(a) rejects invalid agent without writing'
+
+# (a2) rows in a git checkout show the branch instead of window.pane.
+BRANCH_REPO="$TMP_ROOT/branch-repo"
+git init -q -b feat/branch-label "$BRANCH_REPO"
+git -C "$BRANCH_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
+BRANCH_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n branch-pane -c "$BRANCH_REPO" 'exec sleep 3600')
+run_state "$BRANCH_PANE" set pi working
+BRANCH_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$BRANCH_PANE" | head -n 1)
+assert_match ' ap-test:feat/branch-label ' "$BRANCH_ROW" '(a2) shows branch for git panes'
+assert_eq ok "$(printf '%s\n' "$BRANCH_ROW" | awk '$0 !~ /ap-test:[0-9]+\.[0-9]+/ { print "ok" }')" '(a2) git panes drop window.pane'
+git -C "$BRANCH_REPO" checkout -q --detach
+DETACHED_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$BRANCH_PANE" | head -n 1)
+assert_match ' ap-test:[0-9a-f]{7,} ' "$DETACHED_ROW" '(a2) shows short sha for detached HEAD'
+tmux_cmd kill-window -t "$BRANCH_PANE"
+
+# Subdirectories and linked worktrees resolve to their own branch.
+git -C "$BRANCH_REPO" checkout -q feat/branch-label
+mkdir -p "$BRANCH_REPO/sub/dir"
+git -C "$BRANCH_REPO" worktree add -q -b wt/other "$TMP_ROOT/branch-worktree"
+SUB_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n branch-sub -c "$BRANCH_REPO/sub/dir" 'exec sleep 3600')
+WT_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n branch-wt -c "$TMP_ROOT/branch-worktree" 'exec sleep 3600')
+run_state "$SUB_PANE" set pi working
+run_state "$WT_PANE" set pi working
+BRANCH_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
+assert_match "$SUB_PANE"$'\t[^\n]* ap-test:feat/branch-label ' "$BRANCH_LIST" '(a2) subdirectory resolves to repo branch'
+assert_match "$WT_PANE"$'\t[^\n]* ap-test:wt/other ' "$BRANCH_LIST" '(a2) linked worktree resolves to its own branch'
+git -C "$BRANCH_REPO" branch -q long-branch-name-for-truncation-check-0123456789
+git -C "$BRANCH_REPO" checkout -q long-branch-name-for-truncation-check-0123456789
+LONG_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
+assert_match ' ap-test:long-branch-name-for-trun[.][.][.] ' "$LONG_ROW" '(a2) truncates long branch names'
+tmux_cmd kill-window -t "$SUB_PANE"
+tmux_cmd kill-window -t "$WT_PANE"
 
 # (b) identical state does not refresh since.
 BEFORE=$(pane_option "$PI_PANE" '#{@ap_since}')
