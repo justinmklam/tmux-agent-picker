@@ -691,7 +691,7 @@ interactive() {
     "${fzf_colors[@]}" \
     --with-shell 'bash -c' --no-input --prompt='attention-order ' --footer "$footer" \
     --border-label="$border_label" --preview 'tmux capture-pane -ep -t {1}' \
-    --preview-window='right:50%,follow' \
+    --preview-window='up:60%,follow,border-bottom' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
     --bind "x:execute($root_q/bin/agent-pick --kill {1} --client $client_q)+transform($root_q/bin/agent-pick --reload-action --client $client_q)" \
     --bind "tab:transform($root_q/bin/agent-pick --toggle-action --client $client_q)" \

@@ -885,6 +885,15 @@ PREVIEW_SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
 }
 ok '(u2) preview shows the bottom of the pane'
 [[ $PREVIEW_SCREEN != *preview-top* ]] || fail '(u2) preview scrolled past the top of the pane'
+PICKER_HEIGHT=$(tmux_cmd display-message -p -t "$PICKER" '#{pane_height}')
+PREVIEW_BOTTOM_LINE=$(printf '%s\n' "$PREVIEW_SCREEN" | awk '/preview-bottom/ { print NR; exit }')
+FIRST_ROW_LINE=$(printf '%s\n' "$PREVIEW_SCREEN" | awk '/(blocked|working|done|idle|session)[[:space:]]/ { print NR; exit }')
+[[ -n $FIRST_ROW_LINE && $PREVIEW_BOTTOM_LINE -lt $FIRST_ROW_LINE ]] || fail '(u2) preview sits above the list'
+(( FIRST_ROW_LINE > PREVIEW_BOTTOM_LINE + 1 )) || fail '(u2) preview has spacing before the list'
+(( FIRST_ROW_LINE > PICKER_HEIGHT / 2 )) || fail '(u2) preview uses more than half the picker height'
+(( $(picker_rows "$PICKER" | wc -l) >= 2 )) || fail '(u2) multiple rows remain visible below the preview'
+[[ $PREVIEW_SCREEN == *'Tab session order'* ]] || fail '(u2) footer remains visible below the preview'
+ok '(u2) larger stacked preview retains rows and footer'
 tmux_cmd send-keys -t "$PICKER" Escape
 run_state "$PREVIEW_PANE" clear
 
