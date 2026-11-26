@@ -70,9 +70,11 @@ Claude Code reports its lifecycle through hooks in `~/.claude/settings.json`. Me
 | `UserPromptSubmit` | `working` |
 | `PermissionRequest` | `blocked` |
 | `PostToolUse` | `working` |
-| `Stop` | `done` |
+| `Stop` | `done`, or `working` while a background shell task is still running |
 | `StopFailure` | `done` |
 | `SessionEnd` | cleared |
+
+On `Stop`, the hook checks the pane's process tree for a live Claude Bash shell (a command line containing `shell-snapshots/`). If one exists, Claude is waiting on a background task and will resume when it finishes, so the pane stays `working`; the next `Stop` reports `done`. A long-lived background process, such as a dev server, therefore keeps the pane `working` until it exits. Only `Stop` is checked, and only for `claude`.
 
 ### Install
 

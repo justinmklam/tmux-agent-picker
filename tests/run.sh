@@ -1353,6 +1353,14 @@ assert_eq done "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) Stop after bl
 hook "$CLAUDE_PANE" claude prompt "$CLAUDE_PAYLOAD" >/dev/null
 hook "$CLAUDE_PANE" claude stop '{"session_id":"s1","agent_id":"a1","hook_event_name":"Stop"}' >/dev/null
 assert_eq working "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) subagent Stop leaves the state untouched'
+# A Claude background shell task keeps the turn open: Stop must stay working.
+CLAUDE_BG_PANE=$(new_pane claude-bg "sh -c 'sleep 3600; :' /fake/.claude/shell-snapshots/snapshot-zsh-1.sh & exec sleep 3600")
+sleep 0.3
+hook "$CLAUDE_BG_PANE" claude prompt "$CLAUDE_PAYLOAD" >/dev/null
+hook "$CLAUDE_BG_PANE" claude stop "$CLAUDE_PAYLOAD" >/dev/null
+assert_eq working "$(pane_option "$CLAUDE_BG_PANE" '#{@ap_state}')" '(x) Stop with a background shell task stays working'
+tmux_cmd kill-pane -t "$CLAUDE_BG_PANE" 2>/dev/null || true
+
 hook "$CLAUDE_PANE" claude end "$CLAUDE_PAYLOAD" >/dev/null
 assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_agent}')" '(x) SessionEnd removes agent'
 assert_eq '' "$(pane_option "$CLAUDE_PANE" '#{@ap_state}')" '(x) SessionEnd removes state'

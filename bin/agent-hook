@@ -74,6 +74,29 @@ if [[ -n $lock_root ]]; then
   trap 'rmdir "$lock" 2>/dev/null || true' EXIT
 fi
 
+# True when the pane's process tree holds a Claude Code background shell task.
+# Claude launches every Bash tool command through a shell that sources a
+# `shell-snapshots/` file, so a live one after Stop means the turn is still
+# waiting on a task and Claude will resume when it finishes.
+has_background_task() {  # pane
+  local pid
+  pid=$("$TMUX_BIN" display-message -p -t "$1" '#{pane_pid}' 2>/dev/null || true)
+  [[ $pid =~ ^[0-9]+$ ]] || return 1
+  ps -A -o pid=,ppid=,command= 2>/dev/null | awk -v root="$pid" '
+    { p = $1; q = $2; sub(/^[ \t]*[0-9]+[ \t]+[0-9]+[ \t]+/, ""); kid[q] = kid[q] " " p; cmd[p] = $0 }
+    END {
+      queue[1] = root; n = 1
+      for (i = 1; i <= n; i++) {
+        m = split(kid[queue[i]], a, " ")
+        for (j = 1; j <= m; j++) {
+          if (cmd[a[j]] ~ /shell-snapshots\//) found = 1
+          queue[++n] = a[j]
+        }
+      }
+      exit !found
+    }'
+}
+
 state=''
 case "$verb" in
   session) state=idle ;;
@@ -88,6 +111,9 @@ case "$verb" in
     ;;
   stop)
     state=done
+    if [[ $agent == claude ]] && has_background_task "$pane"; then
+      state=working
+    fi
     if [[ $agent == agy ]]; then
       case "$(printf '%s' "$reason" | tr '[:upper:]' '[:lower:]')" in
         user_canceled) state=idle ;;
