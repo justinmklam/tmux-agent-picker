@@ -67,7 +67,7 @@ The four states tell you:
 - **`done`** — the agent finished a turn and needs your attention.
 - **`idle`** — the agent is not running, or you have already looked at a finished agent.
 
-Agent ordering puts the pane currently active in the client that opened the picker first. Both views keep rows from the same tmux session contiguous. The default view ranks session groups by the best state tier present (`blocked`, `working`, `done`, `idle`) and newest state change, then orders members newest-first; the picker-local `Tab` toggle changes group order to the current session and its numeric family first, followed by `LC_ALL=C` session name order, and keeps members newest-first. Within either view, the current pane remains first in its group when present. The first row in each group is an unindented root; later rows use `├─` or `└─` tree connectors, which are presentation-only. The order mode is not persisted. Session-only rows are included in the grouping and selecting one switches to that session's active pane.
+Agent ordering puts the pane currently active in the client that opened the picker first, and keeps rows from the same tmux session contiguous. Session groups rank by the best state tier present (`blocked`, `working`, `done`, `idle`) and newest state change, then members are ordered newest-first. Within a group, the current pane remains first when present. The first row in each group is an unindented root; later rows use `├─` or `└─` tree connectors, which are presentation-only. Session-only rows are included in the grouping and selecting one switches to that session's active pane.
 
 Each agent row's location column reads `session:branch` when the pane's `#{pane_current_path}` is inside a git checkout, and `session:window.pane` otherwise. `git_branch_for` in `bin/agent-pick` walks up to the nearest `.git` and reads `HEAD` directly, so listing spawns no `git` processes. It follows the `gitdir:` pointer used by linked worktrees and submodules, shows the short SHA on a detached HEAD, and the whole location column is capped at 40 characters (override with `AP_LOCATION_MAX`) and the session name within it at 24 (`AP_SESSION_MAX`). Longer values are cut to fit plus `...`; filtering still matches the full session name.
 
@@ -102,7 +102,7 @@ Which lifecycle events an integration should report is documented in [AGENT_SUPP
 - Every client switch targets the client passed to the popup with `switch-client -c`.
 - User paths stay out of fzf action text; the picker uses fzf placeholders and its quoting for `{q}` and `{}`.
 - Picker transitions use `exec fzf` and process substitution so no waiting shells are left behind.
-- Agent order puts the current client pane first; both views keep session groups contiguous, with state-ranked groups by default and alphabetical groups after `Tab`, and newest `@ap_since` members within each group.
+- Agent order puts the current client pane first, keeps session groups contiguous ranked by state tier, and orders newest `@ap_since` members first within each group.
 - `j`/`k` and Up/Down navigation wrap from either end of the list.
 - A changed query restarts the cursor at the first row (`change:first`) so filtering never keeps a stale cursor position.
 - The list reloads after an action without closing the picker.
@@ -113,13 +113,12 @@ Keys:
 | --- | --- |
 | `Enter` | Go to the selected agent or session. |
 | `j` / `k` or Up/Down | Move the cursor down / up; navigation wraps at either end. |
-| `Tab` | Toggle between state-ranked session groups and alphabetical session groups; the mode is picker-local. |
 | `n` | Open the directory picker and switch to or create that session. |
-| `x` | Kill the session under the cursor. The prompt reads `kill session <name>? [y/N]` and only `y` or `Y` kills it. If the selected session is the one attached to the picker client, the client switches to the next session before the kill. |
+| `x` | Kill the window under the cursor. The prompt reads `kill window <name>? [y/N]` and only `y` or `Y` kills it. Sibling windows and the owning session remain. If it is the current session's last window, the popup client moves to another session first; with no alternate session, the kill is refused. |
 | `/` | Enter filter mode; `n` and `x` type normally there. Typing restarts the cursor at the first row. |
 | `q` / `Esc` | Close the picker. `Esc` first clears the query and leaves filter mode. |
 
-Killing a session terminates every window and pane in it, including unsaved work. The list reloads afterwards and keeps the picker open.
+Killing a window terminates every pane in it, including unsaved work. Sibling windows and the owning session remain; if the window was the session's last one, tmux also removes the empty session. The list reloads afterwards and keeps the picker open.
 
 The directory picker (`n`) lists zoxide directories, switches to a session whose path matches the selection, and otherwise creates a session named after the directory, adding `-2`, `-3`, … on name collisions. Absolute paths, `~`/`~/...`, and explicit `.`/`./...` or `..`/`../...` queries are opened directly; other text is fuzzy-matched against the listed directories, so a query such as `.pi/agent` can select the displayed `~/.pi/agent` row. `Esc` returns to the agent picker. The picker does not remove directories from zoxide; run `zoxide remove <directory>` yourself.
 

@@ -4,11 +4,11 @@ Yet another agent management tool for tmux, written in bash.
 
 ![tmux agent picker popup listing agents by state, with a pane preview](docs/screencap.png)
 
-Press `prefix + a` for a list with the current client pane first, followed by contiguous session groups. The default view ranks groups by their highest-priority state and newest activity, then orders agents newest-first within each group. Press `Tab` to toggle to alphabetically sorted (`LC_ALL=C`) session groups (with the current session and its numeric family first), also newest-first within each group. The first row in a group is unindented; additional rows use tree connectors. `Enter` jumps to the pane. `n` opens a zoxide-backed directory picker to switch to or create a session without leaving the popup.
+Press `prefix + a` for a list with the current client pane first, followed by contiguous session groups. Session groups rank by their highest-priority state and newest activity, then agents are ordered newest-first within each group. The first row in a group is unindented; additional rows use tree connectors. `Enter` jumps to the pane. `n` opens a zoxide-backed directory picker to switch to or create a session without leaving the popup.
 
 - **See what needs attention** — state, agent, `session:branch` (or `session:window.pane` outside a git checkout), and age in one line per agent.
 - **Jump straight to the work** — selecting a row switches your client to that pane and window.
-- **Filter or clean up** — `/` filters, `x` kills the session under the cursor.
+- **Filter or clean up** — `/` filters, `x` kills the window under the cursor.
 - **Any agent** — pi reports state out of the box; other agents are detected from their process, and any agent can report state with a single command.
 
 ## Supported agents
@@ -116,9 +116,8 @@ Run `/reload` in pi, then press `prefix + a`.
 | --- | --- |
 | `Enter` | Go to the selected agent or session |
 | `j` / `k` or Up/Down | Move down / up; navigation wraps at either end |
-| `Tab` | Toggle between state-ranked session groups and alphabetically sorted (`LC_ALL=C`) session groups |
 | `n` | Open the directory picker, then switch to or create that session |
-| `x` | Kill the session under the cursor; confirms with `y`/`Y` |
+| `x` | Kill the window under the cursor; confirms with `y`/`Y` |
 | `/` | Filter mode; `n` and `x` type normally there |
 | `q` / `Esc` | Close; `Esc` first clears the query and leaves filter mode |
 
@@ -131,7 +130,7 @@ Run `/reload` in pi, then press `prefix + a`.
 | `done` | Finished a turn and needs your attention |
 | `idle` | Not running, or a finished agent you already looked at |
 
-Rows put the pane currently active in the client that opened the picker first. Both views keep rows from the same tmux session together. In the default view, session groups rank by the best state tier present (`blocked`, `working`, `done`, `idle`) and newest state change; in the Tab view, groups sort by alphabetical session name after the current session and its numeric family. Within each group, the current pane remains first when present, followed by newest `@ap_since`. The first row is the unindented group root and later rows use `├─` or `└─` tree connectors; these are visual only and every row remains selectable. The order mode lasts only for the current picker. Session-only rows participate in session grouping. Looking at a pane turns its `done` state into `idle` automatically, so finished agents keep their place in the list.
+Rows put the pane currently active in the client that opened the picker first and keep rows from the same tmux session together. Session groups rank by the best state tier present (`blocked`, `working`, `done`, `idle`) and newest state change. Within each group, the current pane remains first when present, followed by newest `@ap_since`. The first row is the unindented group root and later rows use `├─` or `└─` tree connectors; these are visual only and every row remains selectable. Session-only rows participate in session grouping. Looking at a pane turns its `done` state into `idle` automatically, so finished agents keep their place in the list.
 
 Agents detected from their process appear as `idle` with an age of `-`: the process name proves the agent is running, but it cannot report what it is doing.
 

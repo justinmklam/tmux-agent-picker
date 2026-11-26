@@ -3,14 +3,10 @@ set -u
 
 TMUX_BIN=${TMUX_BIN:-tmux}
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
-NORMAL_FOOTER='Tab session order  Enter  n  x kill  /  j/k  q/Esc'
-SESSION_FOOTER='Tab state order  Enter  n  x kill  /  j/k  q/Esc'
-FILTER_FOOTER='Tab session order  type to filter  Enter  Esc back'
-FILTER_SESSION_FOOTER='Tab state order  type to filter  Enter  Esc back'
-EMPTY_FOOTER='Tab session order  no agents  Enter  n  /  j/k  q/Esc'
-EMPTY_SESSION_FOOTER='Tab state order  no agents  Enter  n  /  j/k  q/Esc'
-DEFAULT_BORDER_LABEL=' agents · Tab sess '
-SESSION_BORDER_LABEL=' agents · Tab state '
+NORMAL_FOOTER='Enter  n  x kill  /  j/k  q/Esc'
+FILTER_FOOTER='type to filter  Enter  Esc back'
+EMPTY_FOOTER='no agents  Enter  n  /  j/k  q/Esc'
+BORDER_LABEL=' agents '
 
 AP_DETECT_AGENTS=''
 AP_SESSION_COLORS=''
@@ -228,16 +224,12 @@ location_for() {
 }
 
 list_agents() {
-  local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0} sort_order=${3:-state}
+  local current_pane=${1:-${TMUX_PANE:-}} metadata=${2:-0}
   local pane state since agent session session_id window pane_index command title pid path location
   local tier age display current_rank window_active pane_active
   local panes session_pane sessions_with_agents='' pending=''
   local session_count=0 i
   local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}\x1f#{window_active}\x1f#{pane_active}\x1f#{pane_current_path}'
-  case "$sort_order" in
-    session) ;;
-    *) sort_order=state ;;
-  esac
   {
     AGENT_NAMES=$(agent_names)
     NOW=$(date +%s)
@@ -322,7 +314,7 @@ list_agents() {
       printf '%s\t4\t0\t%s\t%s\t%s\tsession %s\n' "$current_rank" "$session_pane" "$session_pane" "$session_name" "$session_name"
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
-    awk -v order="$sort_order" -v current_pane="$current_pane" -F '\t' '
+    awk -v current_pane="$current_pane" -F '\t' '
       {
         session = $6
         if ($5 == current_pane) current_session = session
@@ -341,13 +333,8 @@ list_agents() {
           if (session == current_session) group_rank = 0
           else if (session_family == current_family) group_rank = 1
           else group_rank = 2
-          if (order == "session") {
-            group_tier = 0
-            group_latest = 0
-          } else {
-            group_tier = best_tier[session]
-            group_latest = latest[session]
-          }
+          group_tier = best_tier[session]
+          group_latest = latest[session]
           split(rows[i], fields, "\t")
           printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
             group_rank, group_tier, group_latest, session, fields[1], fields[3], rows[i]
@@ -535,21 +522,6 @@ read_tty_key() {
   printf '%s' "$answer"
 }
 
-session_id_for_pane() {
-  "$TMUX_BIN" display-message -p -t "${1:-}" '#{session_id}' 2>/dev/null || true
-}
-
-current_session_id() {
-  local client=${1:-} target=${TMUX_PANE:-}
-  if [[ -n $client ]]; then
-    "$TMUX_BIN" display-message -p -t "$client" '#{session_id}' 2>/dev/null || true
-  elif [[ -n $target ]]; then
-    session_id_for_pane "$target"
-  else
-    "$TMUX_BIN" display-message -p '#{session_id}' 2>/dev/null || true
-  fi
-}
-
 current_pane_for_client() {
   local client=${1:-}
   if [[ -n $client ]]; then
@@ -559,10 +531,10 @@ current_pane_for_client() {
   fi
 }
 
-# Kill the session owning the pane under the cursor. Always returns 0: it runs
+# Kill the window owning the pane under the cursor. Always returns 0: it runs
 # from an fzf binding that continues with a reload.
-kill_session_for_pane() {
-  local pane=${1:-} client='' session_id session_name current answer
+kill_window_for_pane() {
+  local pane=${1:-} client='' window_id window_name session_id current_window current_session window_count answer moved=0
   shift || true
   while [[ $# -gt 0 ]]; do
     case $1 in
@@ -573,14 +545,12 @@ kill_session_for_pane() {
     esac
   done
   [[ -n $pane ]] || return 0
-  session_id=$(session_id_for_pane "$pane")
-  [[ -n $session_id ]] || return 0
-  session_name=$("$TMUX_BIN" display-message -p -t "$session_id" '#{session_name}' 2>/dev/null || true)
-  [[ -n $session_name ]] || session_name=$session_id
+  window_id=$("$TMUX_BIN" display-message -p -t "$pane" '#{window_id}' 2>/dev/null || true)
+  [[ -n $window_id ]] || return 0
+  window_name=$("$TMUX_BIN" display-message -p -t "$pane" '#{window_name}' 2>/dev/null || true)
+  [[ -n $window_name ]] || window_name=$window_id
 
-  current=$(current_session_id "$client")
-
-  tty_write 'kill session %s? [y/N] ' "$session_name"
+  tty_write 'kill window %s? [y/N] ' "$window_name"
   answer=$(read_tty_key)
   case "$answer" in
     y | Y) ;;
@@ -590,21 +560,40 @@ kill_session_for_pane() {
       ;;
   esac
 
-  # Move this client first so killing its current session leaves it on the
-  # following session. With no next session, tmux will simply reject the
-  # switch and the requested kill still proceeds.
-  if [[ -n $current && $session_id == "$current" ]]; then
-    if [[ -n $client ]]; then
-      "$TMUX_BIN" switch-client -c "$client" -n >/dev/null 2>&1 || true
-    else
-      "$TMUX_BIN" switch-client -n >/dev/null 2>&1 || true
+  # Killing the last window of the client's session also kills that session.
+  # Move the qualified client first so the deletion cannot disconnect it.
+  if [[ -n $client ]]; then
+    current_window=$("$TMUX_BIN" display-message -p -t "$client" '#{window_id}' 2>/dev/null || true)
+  elif [[ -n ${TMUX_PANE:-} ]]; then
+    current_window=$("$TMUX_BIN" display-message -p -t "$TMUX_PANE" '#{window_id}' 2>/dev/null || true)
+  fi
+  if [[ $current_window == "$window_id" ]]; then
+    session_id=$("$TMUX_BIN" display-message -p -t "$pane" '#{session_id}' 2>/dev/null || true)
+    window_count=$("$TMUX_BIN" list-windows -t "$session_id" 2>/dev/null | wc -l | tr -d ' ')
+    if [[ $window_count == 1 ]]; then
+      if [[ -n $client ]]; then
+        "$TMUX_BIN" switch-client -c "$client" -n >/dev/null 2>&1 || \
+          "$TMUX_BIN" switch-client -c "$client" -p >/dev/null 2>&1 || true
+        current_session=$("$TMUX_BIN" display-message -p -t "$client" '#{session_id}' 2>/dev/null || true)
+      else
+        "$TMUX_BIN" switch-client -n >/dev/null 2>&1 || \
+          "$TMUX_BIN" switch-client -p >/dev/null 2>&1 || true
+        current_session=$("$TMUX_BIN" display-message -p '#{session_id}' 2>/dev/null || true)
+      fi
+      [[ -n $current_session && $current_session != "$session_id" ]] && moved=1
+      if (( ! moved )); then
+        tty_write '\ncannot kill window %s: no other session is available\n' "$window_name"
+        tty_write 'press any key to return'
+        read_tty_key >/dev/null
+        return 0
+      fi
     fi
   fi
 
-  if "$TMUX_BIN" kill-session -t "$session_id" >/dev/null 2>&1; then
-    tty_write '\nkilled session %s\n' "$session_name"
+  if "$TMUX_BIN" kill-window -t "$window_id" >/dev/null 2>&1; then
+    tty_write '\nkilled window %s\n' "$window_name"
   else
-    tty_write '\nagent-picker: could not kill session %s\n' "$session_name"
+    tty_write '\nagent-picker: could not kill window %s\n' "$window_name"
     tty_write 'press any key to return'
     read_tty_key >/dev/null
   fi
@@ -615,7 +604,7 @@ coloured_agents() {
   # Load once so both pipeline subshells inherit the cached values instead of
   # each paying a tmux round trip.
   load_theme_options
-  list_agents "${1:-}" 1 "${2:-state}" | colour_agents
+  list_agents "${1:-}" 1 | colour_agents
 }
 
 go_to_pane() {
@@ -627,44 +616,8 @@ go_to_pane() {
   $TMUX_BIN select-pane -t "$pane" >/dev/null 2>&1 || true
 }
 
-toggle_action() {
-  local client='' next_order next_prompt footer filter_footer border_label root_q client_q agents
-  while [[ $# -gt 0 ]]; do
-    case $1 in
-      --client)
-        if (( $# >= 2 )); then client=$2; shift 2; else client=''; shift; fi
-        ;;
-      *) shift ;;
-    esac
-  done
-  if [[ ${FZF_PROMPT:-} == session-order* ]]; then
-    next_order=state
-    next_prompt='attention-order '
-    footer=$NORMAL_FOOTER
-    filter_footer=$FILTER_FOOTER
-    border_label=$DEFAULT_BORDER_LABEL
-  else
-    next_order=session
-    next_prompt='session-order '
-    footer=$SESSION_FOOTER
-    filter_footer=$FILTER_SESSION_FOOTER
-    border_label=$SESSION_BORDER_LABEL
-  fi
-  agents=$(list_agents "$(current_pane_for_client "$client")" 1 "$next_order")
-  if ! has_agent_rows "$agents"; then
-    [[ $next_order == session ]] && footer=$EMPTY_SESSION_FOOTER || footer=$EMPTY_FOOTER
-  fi
-  if [[ ${FZF_INPUT_STATE:-} == enabled ]]; then
-    footer=$filter_footer
-  fi
-  root_q=$(printf '%q' "$ROOT")
-  client_q=$(client_quote "$client")
-  printf 'reload(%s/bin/agent-pick --rows --client %s --order %s)+change-prompt(%s)+change-footer(%s)+change-border-label(%s)+first' \
-    "$root_q" "$client_q" "$next_order" "$next_prompt" "$footer" "$border_label"
-}
-
 escape_action() {
-  local client='' order=state footer agents
+  local client='' footer=$NORMAL_FOOTER agents
   while [[ $# -gt 0 ]]; do
     case $1 in
       --client)
@@ -677,21 +630,13 @@ escape_action() {
     printf 'abort'
     return 0
   fi
-  [[ ${FZF_PROMPT:-} == session-order* ]] && order=session
-  if [[ $order == session ]]; then
-    footer=$SESSION_FOOTER
-  else
-    footer=$NORMAL_FOOTER
-  fi
-  agents=$(list_agents "$(current_pane_for_client "$client")" 1 "$order")
-  if ! has_agent_rows "$agents"; then
-    [[ $order == session ]] && footer=$EMPTY_SESSION_FOOTER || footer=$EMPTY_FOOTER
-  fi
+  agents=$(list_agents "$(current_pane_for_client "$client")" 1)
+  has_agent_rows "$agents" || footer=$EMPTY_FOOTER
   printf 'clear-query+hide-input+rebind(n,x,/,j,k)+change-footer(%s)' "$footer"
 }
 
 reload_action() {
-  local client='' order=state footer agents root_q client_q
+  local client='' footer=$NORMAL_FOOTER agents root_q client_q
   while [[ $# -gt 0 ]]; do
     case $1 in
       --client)
@@ -700,54 +645,40 @@ reload_action() {
       *) shift ;;
     esac
   done
-  [[ ${FZF_PROMPT:-} == session-order* ]] && order=session
-  if [[ $order == session ]]; then
-    footer=$SESSION_FOOTER
-  else
-    footer=$NORMAL_FOOTER
-  fi
-  agents=$(list_agents "$(current_pane_for_client "$client")" 1 "$order")
-  if ! has_agent_rows "$agents"; then
-    [[ $order == session ]] && footer=$EMPTY_SESSION_FOOTER || footer=$EMPTY_FOOTER
-  fi
+  agents=$(list_agents "$(current_pane_for_client "$client")" 1)
+  has_agent_rows "$agents" || footer=$EMPTY_FOOTER
   root_q=$(printf '%q' "$ROOT")
   client_q=$(client_quote "$client")
-  printf 'reload(%s/bin/agent-pick --rows --client %s --order %s)+change-footer(%s)' \
-    "$root_q" "$client_q" "$order" "$footer"
+  printf 'reload(%s/bin/agent-pick --rows --client %s)+change-footer(%s)' \
+    "$root_q" "$client_q" "$footer"
 }
 
 filter_action() {
-  local footer=$FILTER_FOOTER
-  [[ ${FZF_PROMPT:-} == session-order* ]] && footer=$FILTER_SESSION_FOOTER
-  printf 'show-input+unbind(n,x,/,j,k)+change-footer(%s)' "$footer"
+  printf 'show-input+unbind(n,x,/,j,k)+change-footer(%s)' "$FILTER_FOOTER"
 }
 
 interactive() {
-  local client=${1:-} client_q agents footer theme root_q current_pane border_label fzf_colors=()
+  local client=${1:-} client_q agents footer theme root_q current_pane fzf_colors=()
   client_q=$(client_quote "$client")
   root_q=$(printf '%q' "$ROOT")
   current_pane=$(current_pane_for_client "$client")
   # Load before the command substitution so the listing subshell inherits the
   # cached values instead of fetching them a second time.
   load_theme_options
-  agents=$(list_agents "$current_pane" 1 state)
+  agents=$(list_agents "$current_pane" 1)
   footer=$NORMAL_FOOTER
-  border_label=$DEFAULT_BORDER_LABEL
-  if ! has_agent_rows "$agents"; then
-    footer=$EMPTY_FOOTER
-  fi
+  has_agent_rows "$agents" || footer=$EMPTY_FOOTER
   theme=$AP_FZF_COLORS
   [[ -n $theme ]] && fzf_colors=(--color="$theme")
 
   exec fzf \
     --ansi --delimiter=$'\t' --nth=1,2,3.. --with-nth=3.. --tiebreak=index --reverse --cycle \
     "${fzf_colors[@]}" \
-    --with-shell 'bash -c' --no-input --prompt='attention-order ' --footer "$footer" \
-    --border-label="$border_label" --preview 'tmux capture-pane -ep -t {1}' \
+    --with-shell 'bash -c' --no-input --prompt='filter> ' --footer "$footer" \
+    --border-label="$BORDER_LABEL" --preview 'tmux capture-pane -ep -t {1}' \
     --preview-window='up:60%,follow,border-bottom' \
     --bind "n:become($root_q/bin/agent-new --client $client_q)" \
     --bind "x:execute($root_q/bin/agent-pick --kill {1} --client $client_q)+transform($root_q/bin/agent-pick --reload-action --client $client_q)" \
-    --bind "tab:transform($root_q/bin/agent-pick --toggle-action --client $client_q)" \
     --bind "/:transform($root_q/bin/agent-pick --filter-action)" \
     --bind 'j:down,k:up' \
     --bind 'change:first' \
@@ -759,14 +690,10 @@ interactive() {
 
 parse_picker_args() {
   PICKER_CLIENT=''
-  PICKER_ORDER=state
   while [[ $# -gt 0 ]]; do
     case $1 in
       --client)
         if (( $# >= 2 )); then PICKER_CLIENT=$2; shift 2; else PICKER_CLIENT=''; shift; fi
-        ;;
-      --order)
-        if (( $# >= 2 )); then PICKER_ORDER=$2; shift 2; else PICKER_ORDER=state; shift; fi
         ;;
       *) shift ;;
     esac
@@ -774,10 +701,6 @@ parse_picker_args() {
 }
 
 case "${1:-}" in
-  --toggle-action)
-    shift
-    toggle_action "$@"
-    ;;
   --escape-action)
     shift
     escape_action "$@"
@@ -794,16 +717,16 @@ case "${1:-}" in
     shift
     parse_picker_args "$@"
     load_theme_options
-    list_agents "$(current_pane_for_client "$PICKER_CLIENT")" 0 "$PICKER_ORDER"
+    list_agents "$(current_pane_for_client "$PICKER_CLIENT")" 0
     ;;
   --rows)
     shift
     parse_picker_args "$@"
-    coloured_agents "$(current_pane_for_client "$PICKER_CLIENT")" "$PICKER_ORDER"
+    coloured_agents "$(current_pane_for_client "$PICKER_CLIENT")"
     ;;
   --kill)
     shift
-    kill_session_for_pane "$@"
+    kill_window_for_pane "$@"
     ;;
   --go)
     pane=${2:-}

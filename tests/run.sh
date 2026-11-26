@@ -52,7 +52,7 @@ wait_for() {
   local pane=$1 text=$2 i screen
   for i in $(seq 1 100); do
     screen=$(tmux_cmd capture-pane -p -t "$pane" 2>/dev/null || true)
-    if [[ $screen == *"$text"* || ( $text == 'Enter go' && ( $screen == *'Tab session order'* || $screen == *'Tab state order'* ) ) ]]; then
+    if [[ $screen == *"$text"* ]]; then
       return 0
     fi
     sleep 0.05
@@ -66,7 +66,7 @@ wait_for_normal() {
   local pane=$1 i screen
   for i in $(seq 1 100); do
     screen=$(tmux_cmd capture-pane -p -t "$pane" 2>/dev/null || true)
-    [[ ($screen == *'Tab session order'* || $screen == *'Tab state order'*) && $screen != *'type to filter'* ]] && return 0
+    [[ $screen == *'x kill'* && $screen != *'type to filter'* ]] && return 0
     sleep 0.05
   done
   return 1
@@ -228,7 +228,7 @@ assert_match 'ap-test:long-branch-name-for-truncati[.][.][.] ' "$LONG_ROW" '(a2)
 CAPPED_ROW=$(TMUX_PANE= AP_LOCATION_MAX=20 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1 | sed 's/ / /g')
 assert_match 'ap-test:long-bran[.][.][.] ' "$CAPPED_ROW" '(a2) caps the whole location column with an ellipsis'
 SESSION_CAPPED_ROW=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1 | sed 's/ / /g')
-assert_match ' ap-[.][.][.]:long-branch-name-' "$SESSION_CAPPED_ROW" '(a2) truncates long session names in the location column'
+assert_match 'ap-[.][.][.]:long-branch-name-' "$SESSION_CAPPED_ROW" '(a2) truncates long session names in the location column'
 SESSION_CAPPED_META=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --rows | grep -F "$SUB_PANE" | head -n 1)
 assert_match $'\t'"ap-test"$'\t' "$SESSION_CAPPED_META" '(a2) session cap keeps the full session name for filtering'
 CAPPED_META=$(TMUX_PANE= AP_LOCATION_MAX=3 "$ROOT/bin/agent-pick" --rows | sed -E $'s/\033\\[[0-9;]*m//g' | grep -F "$SUB_PANE" | head -n 1)
@@ -325,7 +325,7 @@ tmux_cmd kill-session -t other-context
 # is available. The private server remains isolated from the user's tmux server.
 if command -v script >/dev/null 2>&1; then
   tmux_cmd select-pane -t "${ORDER_PANES[4]}"
-  script -q /dev/null tmux -L "$SERVER" attach-session -t ap-test >/dev/null 2>&1 &
+  env -u TMUX script -q /dev/null tmux -L "$SERVER" attach-session -t ap-test >/dev/null 2>&1 &
   CLIENT_SCRIPT_PID=$!
   CLIENT_NAME=''
   for _ in $(seq 1 100); do
@@ -474,64 +474,9 @@ tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 tmux_cmd set-option -pt "${ORDER_PANES[3]}" @ap_since $((now - 30))
 tmux_cmd set-option -pt "${ORDER_PANES[4]}" @ap_since $((now - 40))
 
-# (o-order) explicit session ordering groups alphabetically, then by newest state change.
-ORDER_ALPHA_OLD=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-alpha -c "$TMP_ROOT" 'exec sleep 3600')
-ORDER_ALPHA_NEW=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-alpha: -n newer 'exec sleep 3600')
-ORDER_BETA=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-beta -c "$TMP_ROOT" 'exec sleep 3600')
-ORDER_ZULU_NEW=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-zulu -c "$TMP_ROOT" 'exec sleep 3600')
-ORDER_ZULU_OLD=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-zulu: -n older 'exec sleep 3600')
-run_state "$ORDER_ALPHA_OLD" set pi blocked
-run_state "$ORDER_ALPHA_NEW" set pi idle
-run_state "$ORDER_ZULU_NEW" set pi working
-run_state "$ORDER_ZULU_OLD" set pi done
-tmux_cmd set-option -pt "$ORDER_ALPHA_OLD" @ap_since $((now - 50))
-tmux_cmd set-option -pt "$ORDER_ALPHA_NEW" @ap_since $((now - 10))
-tmux_cmd set-option -pt "$ORDER_ZULU_NEW" @ap_since $((now - 20))
-tmux_cmd set-option -pt "$ORDER_ZULU_OLD" @ap_since $((now - 40))
-SESSION_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows --order session | \
-  sed -E $'s/\033\\[[0-9;]*m//g; s/^[ ]+//' | \
-  awk -F '\t' '$2 ~ /^order-(alpha|beta|zulu)$/ { sub(/^[ ]+/, "", $3); if ($3 ~ /^session /) print "session:" $2; else { split($3, fields, /[[:space:]]+/); print fields[1] ":" $2 } }')
-EXPECTED_SESSION_ROWS=$(printf '%s\n' \
-  'idle:order-alpha' 'blocked:order-alpha' 'session:order-beta' \
-  'working:order-zulu' 'done:order-zulu')
-assert_eq "$EXPECTED_SESSION_ROWS" "$SESSION_ROWS" '(o-order) groups rows by alphabetical session and newest first'
-SESSION_TREE_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows --order session | \
-  sed -E $'s/\033\\[[0-9;]*m//g; s/^[ ]+//' | \
-  awk -F '\t' '$2 == "order-alpha" { sub(/^[ ]+/, "", $3); print $0 }')
-[[ $SESSION_TREE_ROWS == *'└─'* ]] || fail '(o-order) renders a connector for the final session child'
-assert_eq 2 "$(printf '%s\n' "$SESSION_TREE_ROWS" | wc -l | tr -d ' ')" '(o-order) keeps both session rows visible'
-
-# (o-order-related) the current session's numeric-name family stays together.
-RELATED_CURRENT=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli-2 -c "$TMP_ROOT" 'exec sleep 3600')
-RELATED_BASE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli -c "$TMP_ROOT" 'exec sleep 3600')
-RELATED_THREE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli-3 -c "$TMP_ROOT" 'exec sleep 3600')
-RELATED_PREFIX=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cja -c "$TMP_ROOT" 'exec sleep 3600')
-for pane in "$RELATED_CURRENT" "$RELATED_BASE" "$RELATED_THREE" "$RELATED_PREFIX"; do
-  run_state "$pane" set pi idle
-done
-RELATED_SESSION_ROWS=$(TMUX_PANE="$RELATED_CURRENT" "$ROOT/bin/agent-pick" --rows --order session | \
-  sed -E $'s/\\033\\[[0-9;]*m//g' | \
-  awk -F '\\t' '$2 ~ /^up-dev-cli(-[0-9]+)?$/ || $2 == "up-dev-cja" { print $2 }')
-EXPECTED_RELATED_SESSION_ROWS=$(printf '%s\n' \
-  'up-dev-cli-2' 'up-dev-cli' 'up-dev-cli-3' 'up-dev-cja')
-assert_eq "$EXPECTED_RELATED_SESSION_ROWS" "$RELATED_SESSION_ROWS" \
-  '(o-order-related) groups current session family first and current session first'
-ok '(o-order-related) groups current session family first and current session first'
-
-SESSION_CURRENT_FIRST=$(TMUX_PANE="$ORDER_ZULU_OLD" "$ROOT/bin/agent-pick" --rows --order session | head -n 1 | cut -f1)
-assert_eq "$ORDER_ZULU_OLD" "$SESSION_CURRENT_FIRST" '(o-order) keeps current pane first in session order'
-SESSION_RELOAD_ACTION=$(FZF_PROMPT=session-order "$ROOT/bin/agent-pick" --reload-action --client test-client)
-[[ $SESSION_RELOAD_ACTION == *'--client test-client --order session'* ]] || fail '(o-order) x reload preserves session order'
-ok '(o-order) x reload preserves session order'
-[[ $SESSION_RELOAD_ACTION != *'+first'* ]] || fail '(o-order) x reload preserves cursor position'
-ok '(o-order) x reload preserves cursor position'
-TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --order
-assert_eq 0 "$?" '(o-order) missing order value does not hang'
+# (o-args) a missing option value is ignored instead of hanging the picker.
 TMUX_PANE= run_bounded "$ROOT/bin/agent-pick" --list --client
-assert_eq 0 "$?" '(o-order) missing client value does not hang'
-for session in order-alpha order-beta order-zulu up-dev-cli up-dev-cli-2 up-dev-cli-3 up-dev-cja; do
-  tmux_cmd kill-session -t "$session"
-done
+assert_eq 0 "$?" '(o-args) missing client value does not hang'
 
 INSTALL_ROOT="$TMP_ROOT/tmux agent-picker-install"
 ln -s "$ROOT" "$INSTALL_ROOT"
@@ -572,9 +517,10 @@ tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker '#{pane_id}')
-wait_for "$PICKER" 'Enter go' || fail '(o) picker did not start'
+wait_for "$PICKER" 'x kill' || fail '(o) picker did not start'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
-[[ $SCREEN == *'Tab session order'* ]] || fail '(o) shows the default order footer'
+[[ $SCREEN == *'n  x kill'* ]] || fail '(o) shows the default footer'
+[[ $SCREEN != *'Tab '* ]] || fail '(o) footer does not advertise the removed Tab toggle'
 [[ $SCREEN =~ blocked[[:space:]]+pi && $SCREEN =~ done[[:space:]]+pi && $SCREEN =~ idle[[:space:]]+pi && $SCREEN =~ working[[:space:]]+pi ]] || {
   printf '%s\n' "$SCREEN" >&2
   fail '(o) shows ordered agent rows'
@@ -589,7 +535,8 @@ ok '(o) hides input in normal mode'
 [[ $SCREEN == *'x kill'* ]] || fail '(o) footer advertises the kill key'
 ok '(o) footer advertises the kill key'
 
-# (o-order-ui) Tab toggles between the default and session-oriented views.
+# (o-group-ui) the single view keeps sessions contiguous and columns aligned, and
+# Tab no longer changes anything now that ordering is not toggleable.
 ORDER_ALPHA_OLD=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-alpha -c "$TMP_ROOT" 'exec sleep 3600')
 ORDER_ALPHA_NEW=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-alpha: -n newer -c "$BRANCH_REPO" 'exec sleep 3600')
 tmux_cmd select-pane -t "$ORDER_ALPHA_NEW" -T col-A
@@ -612,17 +559,6 @@ order_fixture_rows() {
     /order-zulu/ { print $1 ":order-zulu" }
   '
 }
-wait_for_order_rows() {
-  local pane=$1 expected=$2 actual=''
-  for _ in $(seq 1 100); do
-    actual=$(order_fixture_rows "$pane")
-    [[ $actual == "$expected" ]] && return 0
-    sleep 0.05
-  done
-  printf 'timed out waiting for order rows in pane %s\nexpected:\n%s\nactual:\n%s\n' \
-    "$pane" "$expected" "$actual" >&2
-  return 1
-}
 assert_picker_column_alignment() {
   local pane=$1 label=$2 screen positions first
   screen=$(tmux_cmd capture-pane -p -t "$pane")
@@ -639,55 +575,41 @@ assert_picker_column_alignment() {
   assert_eq "$first"$'\n'"$first" "$positions" "$label"
 }
 ORDER_PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-order-picker "exec \"$INSTALL_ROOT/bin/agent-pick\"")
-wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) picker did not start'
+wait_for_normal "$ORDER_PICKER" || fail '(o-group-ui) picker did not start'
 assert_eq "$(printf '%s\n' \
   'idle:order-alpha' 'blocked:order-alpha' 'working:order-zulu')" \
-  "$(order_fixture_rows "$ORDER_PICKER")" '(o-order-ui) starts with contiguous session groups'
-assert_picker_column_alignment "$ORDER_PICKER" '(o-order-ui) aligns age and title across parent and child'
+  "$(order_fixture_rows "$ORDER_PICKER")" '(o-group-ui) keeps session groups contiguous'
+assert_picker_column_alignment "$ORDER_PICKER" '(o-group-ui) aligns age and title across parent and child'
 SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
-[[ $SCREEN == *'Tab session order'* ]] || fail '(o-order-ui) shows the default order hint'
-ok '(o-order-ui) shows the default order hint'
+[[ $SCREEN == *'n  x kill'* && $SCREEN != *'Tab '* ]] || fail '(o-group-ui) shows the default footer'
+ok '(o-group-ui) shows the default footer'
 tmux_cmd send-keys -t "$ORDER_PICKER" Tab
-wait_for "$ORDER_PICKER" 'Tab state order' || fail '(o-order-ui) Tab switches to session ordering'
-wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
-  'idle:order-alpha' 'blocked:order-alpha')" || fail '(o-order-ui) Tab groups by session'
-ok '(o-order-ui) Tab switches to session ordering'
-assert_picker_column_alignment "$ORDER_PICKER" '(o-order-ui) keeps age and title aligned after Tab'
-tmux_cmd send-keys -t "$ORDER_PICKER" /
-wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-order-ui) filter opens in session order'
-SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
-[[ $SCREEN == *'Tab state order'* ]] || fail '(o-order-ui) filter shows the state-order hint'
-ok '(o-order-ui) filter shows the state-order hint'
-tmux_cmd send-keys -t "$ORDER_PICKER" Escape
-wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) Esc leaves session-order filter mode'
-tmux_cmd send-keys -t "$ORDER_PICKER" Tab
-wait_for "$ORDER_PICKER" 'Tab session order' || fail '(o-order-ui) Tab restores default ordering'
-wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
-  'idle:order-alpha' 'blocked:order-alpha' 'working:order-zulu')" || fail '(o-order-ui) restored grouped order'
-ok '(o-order-ui) second Tab restores default order'
-tmux_cmd send-keys -t "$ORDER_PICKER" /
-wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-order-ui) filter opens after order toggles'
-tmux_cmd send-keys -t "$ORDER_PICKER" a l p h a
 sleep 0.2
-tmux_cmd send-keys -t "$ORDER_PICKER" Tab
-wait_for "$ORDER_PICKER" 'Tab state order' || fail '(o-order-ui) Tab keeps the filter footer'
-wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
-  'idle:order-alpha' 'blocked:order-alpha')" || fail '(o-order-ui) Tab retains the filter query'
+SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
+[[ $SCREEN != *'Tab '* ]] || fail '(o-group-ui) Tab no longer toggles ordering'
+ok '(o-group-ui) Tab no longer toggles ordering'
+tmux_cmd send-keys -t "$ORDER_PICKER" /
+wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-group-ui) filter opens'
+SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
+[[ $SCREEN == *'type to filter'* && $SCREEN != *'Tab '* ]] || fail '(o-group-ui) filter footer has no Tab hint'
+ok '(o-group-ui) filter footer has no Tab hint'
 tmux_cmd send-keys -t "$ORDER_PICKER" Escape
-wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) Esc leaves filter mode after order toggles'
+wait_for_normal "$ORDER_PICKER" || fail '(o-group-ui) Esc leaves filter mode'
 tmux_cmd send-keys -t "$ORDER_PICKER" q
 for session in order-alpha order-beta order-zulu; do
   tmux_cmd kill-session -t "$session"
 done
 
-# (o2) x kills the session under the cursor only after y/N confirmation.
-DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -c "$TMP_ROOT" 'exec sleep 3600')
+# (o2) x kills the window under the cursor only after y/N confirmation.
+DOOMED_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s doomed -n doomed-window -c "$TMP_ROOT" 'exec sleep 3600')
 run_state "$DOOMED_PANE" set pi blocked
-tmux_cmd set-option -pt "$DOOMED_PANE" @ap_since "$(date +%s)"
-CURSOR_TARGET_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s cursor-target -c "$TMP_ROOT" 'exec sleep 3600')
+tmux_cmd set-option -pt "$DOOMED_PANE" @ap_since "$(( $(date +%s) - 90 ))"
+CURSOR_TARGET_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s cursor-target -n cursor-window -c "$TMP_ROOT" 'exec sleep 3600')
+CURSOR_TARGET_SIBLING=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t cursor-target: -n sibling-window 'exec sleep 3600')
 run_state "$CURSOR_TARGET_PANE" set pi blocked
+run_state "$CURSOR_TARGET_SIBLING" set pi idle
 tmux_cmd set-option -pt "$CURSOR_TARGET_PANE" @ap_since "$(( $(date +%s) + 1 ))"
-script -q /dev/null tmux -L "$SERVER" attach-session -t doomed >/dev/null 2>&1 &
+env -u TMUX script -q /dev/null tmux -L "$SERVER" attach-session -t doomed >/dev/null 2>&1 &
 CLIENT_SCRIPT_PID=$!
 DOOMED_CLIENT=''
 for _ in $(seq 1 100); do
@@ -697,7 +619,7 @@ for _ in $(seq 1 100); do
 done
 [[ -n $DOOMED_CLIENT ]] || fail '(o2) doomed client did not attach'
 KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-killer "exec \"$INSTALL_ROOT/bin/agent-pick\" --client \"$DOOMED_CLIENT\"")
-wait_for "$KILLER" 'Enter go' || fail '(o2) killer picker did not start'
+wait_for "$KILLER" 'x kill' || fail '(o2) killer picker did not start'
 FIRST_ROW=$(tmux_cmd capture-pane -p -t "$KILLER" | grep -E 'blocked[[:space:]]+pi|session[[:space:]]' | head -n 1)
 [[ $FIRST_ROW == *doomed* ]] || {
   printf '%s\n' "$FIRST_ROW" >&2
@@ -707,28 +629,30 @@ tmux_cmd send-keys -t "$KILLER" j
 sleep 0.2
 assert_match 'cursor-target' "$(picker_focused_row "$KILLER")" '(o2) moves to the second row before deleting'
 tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'kill session cursor-target? [y/N]' || fail '(o2) prompts for the second-row session'
+wait_for "$KILLER" 'kill window cursor-window? [y/N]' || fail '(o2) prompts for the second-row window'
 tmux_cmd send-keys -t "$KILLER" y
 for i in $(seq 1 100); do
-  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- cursor-target || true) ]] && break
+  [[ -z $(tmux_cmd list-windows -t cursor-target -F '#{window_name}' | grep -x -- cursor-window || true) ]] && break
   sleep 0.05
 done
-assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- cursor-target || true)" '(o2) second-row confirmation kills the session'
+assert_eq '' "$(tmux_cmd list-windows -t cursor-target -F '#{window_name}' | grep -x -- cursor-window || true)" '(o2) second-row confirmation kills the window'
+assert_eq 1 "$(tmux_cmd list-windows -t cursor-target -F '#{window_name}' | grep -x -- sibling-window | wc -l | tr -d ' ')" '(o2) keeps the sibling window'
+assert_eq 1 "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- cursor-target | wc -l | tr -d ' ')" '(o2) keeps the owning session'
 wait_for_normal "$KILLER" || fail '(o2) picker stays open after second-row delete'
 ROWS_AFTER_DELETE=''
 for i in $(seq 1 100); do
   ROWS_AFTER_DELETE=$(picker_rows "$KILLER")
-  [[ -n $ROWS_AFTER_DELETE && $ROWS_AFTER_DELETE != *cursor-target* ]] && break
+  [[ -n $ROWS_AFTER_DELETE && $ROWS_AFTER_DELETE != *"$CURSOR_TARGET_PANE"* ]] && break
   sleep 0.05
 done
-[[ -n $ROWS_AFTER_DELETE && $ROWS_AFTER_DELETE != *cursor-target* ]] || fail '(o2) reload drops the second-row session'
+[[ -n $ROWS_AFTER_DELETE && $ROWS_AFTER_DELETE != *"$CURSOR_TARGET_PANE"* ]] || fail '(o2) reload drops the deleted window row'
 FOCUSED_AFTER_DELETE=$(picker_focused_row "$KILLER")
 assert_eq "$(printf '%s\n' "$ROWS_AFTER_DELETE" | sed -n 2p)" "$FOCUSED_AFTER_DELETE" '(o2) second-row delete preserves cursor position'
 tmux_cmd send-keys -t "$KILLER" k
 sleep 0.2
 assert_eq "$(picker_rows "$KILLER" | head -n 1)" "$(picker_focused_row "$KILLER")" '(o2) returns to the first row for the next delete'
 tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts before killing'
+wait_for "$KILLER" 'kill window doomed-window? [y/N]' || fail '(o2) x prompts before killing'
 ok '(o2) x prompts before killing'
 tmux_cmd send-keys -t "$KILLER" n
 wait_for_normal "$KILLER" || fail '(o2) declining returns to the picker'
@@ -736,13 +660,14 @@ wait_for_normal "$KILLER" || fail '(o2) declining returns to the picker'
 ok '(o2) declining keeps the session'
 
 tmux_cmd send-keys -t "$KILLER" x
-wait_for "$KILLER" 'kill session doomed? [y/N]' || fail '(o2) x prompts again after declining'
+wait_for "$KILLER" 'kill window doomed-window? [y/N]' || fail '(o2) x prompts again after declining'
 tmux_cmd send-keys -t "$KILLER" y
 for i in $(seq 1 100); do
-  [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true) ]] && break
+  [[ -z $(tmux_cmd list-windows -t doomed -F '#{window_name}' 2>/dev/null | grep -x -- doomed-window || true) ]] && break
   sleep 0.05
 done
-assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true)" '(o2) confirmation kills the session'
+assert_eq '' "$(tmux_cmd list-windows -t doomed -F '#{window_name}' 2>/dev/null | grep -x -- doomed-window || true)" '(o2) confirmation kills the window'
+assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- doomed || true)" '(o2) removes a session when its last window is killed'
 CLIENT_SCRIPT_PID=''
 wait_for_normal "$KILLER" || fail '(o2) picker stays open after killing'
 for i in $(seq 1 100); do
@@ -752,17 +677,16 @@ for i in $(seq 1 100); do
 done
 [[ $SCREEN != *doomed* ]] || {
   printf '%s\n' "$SCREEN" >&2
-  fail '(o2) reload drops the killed session row'
+  fail '(o2) reload drops the killed window row'
 }
-ok '(o2) reload drops the killed session row'
+ok '(o2) reload drops the killed window row'
 
-# (o3) x confirms and kills the session currently selected by the picker client,
-# moving that client to the next session first.
-CLOSE_CURRENT_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s close-current -c "$TMP_ROOT" 'exec sleep 3600')
+# (o3) x moves the current client to the next session before killing its last window.
+CLOSE_CURRENT_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s close-current -n close-current-window -c "$TMP_ROOT" 'exec sleep 3600')
 CLOSE_NEXT_PANE=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s close-next -c "$TMP_ROOT" 'exec sleep 3600')
 run_state "$CLOSE_CURRENT_PANE" set pi blocked
 run_state "$CLOSE_NEXT_PANE" set pi idle
-script -q /dev/null tmux -L "$SERVER" attach-session -t close-current >/dev/null 2>&1 &
+env -u TMUX script -q /dev/null tmux -L "$SERVER" attach-session -t close-current >/dev/null 2>&1 &
 CLIENT_SCRIPT_PID=$!
 CLOSE_CLIENT=''
 for _ in $(seq 1 100); do
@@ -773,27 +697,27 @@ for _ in $(seq 1 100); do
 done
 [[ -n $CLOSE_CLIENT ]] || fail '(o3) close-current client did not attach'
 CURRENT_KILLER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-current-killer "exec \"$INSTALL_ROOT/bin/agent-pick\" --client \"$CLOSE_CLIENT\"")
-wait_for "$CURRENT_KILLER" 'Enter go' || fail '(o3) current-session picker did not start'
+wait_for "$CURRENT_KILLER" 'x kill' || fail '(o3) current-session picker did not start'
 tmux_cmd send-keys -t "$CURRENT_KILLER" x
-wait_for "$CURRENT_KILLER" 'kill session close-current? [y/N]' || fail '(o3) prompts before killing the current session'
+wait_for "$CURRENT_KILLER" 'kill window close-current-window? [y/N]' || fail '(o3) prompts before killing the current window'
 tmux_cmd send-keys -t "$CURRENT_KILLER" n
-wait_for_normal "$CURRENT_KILLER" || fail '(o3) declining current-session deletion returns to the picker'
+wait_for_normal "$CURRENT_KILLER" || fail '(o3) declining window deletion returns to the picker'
 assert_eq close-current "$(tmux_cmd display-message -p -t "$CLOSE_CLIENT" '#{session_name}')" \
   '(o3) declining keeps the current client session'
 ok '(o3) declining keeps the current client session'
 tmux_cmd send-keys -t "$CURRENT_KILLER" x
-wait_for "$CURRENT_KILLER" 'kill session close-current? [y/N]' || fail '(o3) prompts again for the current session'
+wait_for "$CURRENT_KILLER" 'kill window close-current-window? [y/N]' || fail '(o3) prompts again for the current window'
 tmux_cmd send-keys -t "$CURRENT_KILLER" y
 for i in $(seq 1 100); do
   [[ -z $(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- close-current || true) ]] && break
   sleep 0.05
 done
 assert_eq '' "$(tmux_cmd list-sessions -F '#{session_name}' | grep -x -- close-current || true)" \
-  '(o3) confirmation kills the current session'
+  '(o3) confirmation kills the current session last window'
 assert_eq close-next "$(tmux_cmd display-message -p -t "$CLOSE_CLIENT" '#{session_name}')" \
   '(o3) moves the client to the next session'
-wait_for_normal "$CURRENT_KILLER" || fail '(o3) picker stays open after current-session deletion'
-ok '(o3) current-session deletion returns the client to the next session'
+wait_for_normal "$CURRENT_KILLER" || fail '(o3) picker stays open after current-window deletion'
+ok '(o3) current-window deletion moves the client to the next session'
 tmux_cmd send-keys -t "$CURRENT_KILLER" q
 tmux_cmd kill-session -t close-next
 CLIENT_SCRIPT_PID=''
@@ -920,14 +844,14 @@ FIRST_ROW_LINE=$(printf '%s\n' "$PREVIEW_SCREEN" | awk '/(blocked|working|done|i
 (( FIRST_ROW_LINE > PREVIEW_BOTTOM_LINE + 1 )) || fail '(u2) preview has spacing before the list'
 (( FIRST_ROW_LINE > PICKER_HEIGHT / 2 )) || fail '(u2) preview uses more than half the picker height'
 (( $(picker_rows "$PICKER" | wc -l) >= 2 )) || fail '(u2) multiple rows remain visible below the preview'
-[[ $PREVIEW_SCREEN == *'Tab session order'* ]] || fail '(u2) footer remains visible below the preview'
+[[ $PREVIEW_SCREEN == *'x kill'* ]] || fail '(u2) footer remains visible below the preview'
 ok '(u2) larger stacked preview retains rows and footer'
 tmux_cmd send-keys -t "$PICKER" Escape
 run_state "$PREVIEW_PANE" clear
 
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker-q "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker-q '#{pane_id}')
-wait_for "$PICKER" 'Enter go' || fail '(p) q picker did not start'
+wait_for "$PICKER" 'x kill' || fail '(p) q picker did not start'
 tmux_cmd send-keys -t "$PICKER" q
 for i in $(seq 1 100); do
   [[ $(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}') == 1 ]] && break
@@ -937,12 +861,12 @@ assert_eq 1 "$(tmux_cmd display-message -p -t "$PICKER" '#{pane_dead}')" '(p) q 
 
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker2 "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker2 '#{pane_id}')
-wait_for "$PICKER" 'Enter go' || fail '(r) picker did not start'
+wait_for "$PICKER" 'x kill' || fail '(r) picker did not start'
 tmux_cmd send-keys -t "$PICKER" n
 wait_for "$PICKER" 'Enter new session' || fail '(r) directory picker did not open'
 ok '(r) n opens directory picker'
 tmux_cmd send-keys -t "$PICKER" Escape
-wait_for "$PICKER" 'Enter go' || fail '(r) Esc did not return to agents'
+wait_for "$PICKER" 'x kill' || fail '(r) Esc did not return to agents'
 ok '(r) Esc returns to agent picker'
 tmux_cmd send-keys -t "$PICKER" n
 wait_for "$PICKER" 'Enter new session' || fail '(s) directory picker did not reopen'
@@ -975,7 +899,7 @@ ENTER_DIR="$TMP_ROOT/enter-dir"
 mkdir -p "$ENTER_DIR"
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-picker3 "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-picker3 '#{pane_id}')
-wait_for "$PICKER" 'Enter go' || fail '(r) success picker did not start'
+wait_for "$PICKER" 'x kill' || fail '(r) success picker did not start'
 tmux_cmd send-keys -t "$PICKER" n
 wait_for "$PICKER" 'Enter new session' || fail '(r) success directory picker did not open'
 tmux_cmd send-keys -t "$PICKER" -l -- "$ENTER_DIR"
@@ -1896,24 +1820,30 @@ else
   ok '(aj) jq not installed, skipping merge tests'
 fi
 
-# The empty list keeps the new-session key reachable.
-for pane in "${ORDER_PANES[@]}"; do
-  run_state "$pane" clear
-done
+# The empty list keeps the new-session key reachable. Clear every pane so a
+# state left by an earlier fixture cannot keep the list non-empty.
+while IFS= read -r pane; do
+  [[ -n $pane ]] && run_state "$pane" clear
+done < <(tmux_cmd list-panes -a -F '#{pane_id}')
 PICKER=$(tmux_cmd new-window -d -t ap-test: -n ap-empty "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 PICKER=$(tmux_cmd display-message -p -t ap-test:ap-empty '#{pane_id}')
 wait_for "$PICKER" 'no agents' || fail '(o) empty list shows its footer'
 ok '(o) empty list shows its footer'
 EMPTY_AGENT=$(new_pane empty-agent)
 run_state "$EMPTY_AGENT" set pi working
-tmux_cmd send-keys -t "$PICKER" Tab
-wait_for "$PICKER" 'Tab state order' || fail '(o) empty picker updates its footer after an agent appears'
+# Escape re-renders the footer from a fresh listing without leaving the picker.
+tmux_cmd send-keys -t "$PICKER" /
+wait_for "$PICKER" 'type to filter' || fail '(o) empty picker enters filter mode'
+tmux_cmd send-keys -t "$PICKER" Escape
+wait_for "$PICKER" 'x kill' || fail '(o) empty picker updates its footer after an agent appears'
 SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
 [[ $SCREEN != *'no agents'* ]] || fail '(o) empty picker drops the stale empty footer'
 ok '(o) empty picker drops the stale empty footer'
 run_state "$EMPTY_AGENT" clear
 tmux_cmd kill-pane -t "$EMPTY_AGENT"
-tmux_cmd send-keys -t "$PICKER" Tab
+tmux_cmd send-keys -t "$PICKER" /
+wait_for "$PICKER" 'type to filter' || fail '(o) empty picker re-enters filter mode'
+tmux_cmd send-keys -t "$PICKER" Escape
 wait_for "$PICKER" 'no agents' || fail '(o) picker restores empty footer after the agent disappears'
 ok '(o) picker restores empty footer after the agent disappears'
 tmux_cmd send-keys -t "$PICKER" Escape
