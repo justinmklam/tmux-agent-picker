@@ -4,7 +4,7 @@ Yet another agent management tool for tmux, written in bash.
 
 ![tmux agent picker popup listing agents by state, with a pane preview](docs/screencap.png)
 
-Press `prefix + a` for a list with the current client pane first, followed by every other row in the normal state order: blocked agents at the top, then working, done, and idle, with newest rows first within each group. Press `Tab` to toggle to alphabetically sorted (`LC_ALL=C`) session groups with newest rows first within each session. `Enter` jumps to the pane. `n` opens a zoxide-backed directory picker to switch to or create a session without leaving the popup.
+Press `prefix + a` for a list with the current client pane first, followed by contiguous session groups. The default view ranks groups by their highest-priority state and newest activity, then orders agents newest-first within each group. Press `Tab` to toggle to alphabetically sorted (`LC_ALL=C`) session groups (with the current session and its numeric family first), also newest-first within each group. The first row in a group is unindented; additional rows use tree connectors. `Enter` jumps to the pane. `n` opens a zoxide-backed directory picker to switch to or create a session without leaving the popup.
 
 - **See what needs attention** — state, agent, `session:branch` (or `session:window.pane` outside a git checkout), and age in one line per agent.
 - **Jump straight to the work** — selecting a row switches your client to that pane and window.
@@ -116,7 +116,7 @@ Run `/reload` in pi, then press `prefix + a`.
 | --- | --- |
 | `Enter` | Go to the selected agent or session |
 | `j` / `k` or Up/Down | Move down / up; navigation wraps at either end |
-| `Tab` | Toggle between state/newest order and alphabetically sorted (`LC_ALL=C`) session/newest order |
+| `Tab` | Toggle between state-ranked session groups and alphabetically sorted (`LC_ALL=C`) session groups |
 | `n` | Open the directory picker, then switch to or create that session |
 | `x` | Kill the session under the cursor; confirms with `y`/`Y` |
 | `/` | Filter mode; `n` and `x` type normally there |
@@ -131,7 +131,7 @@ Run `/reload` in pi, then press `prefix + a`.
 | `done` | Finished a turn and needs your attention |
 | `idle` | Not running, or a finished agent you already looked at |
 
-Rows put the pane currently active in the client that opened the picker first. The default view puts the remaining agent rows into the normal state order: `blocked`, `working`, `done`, `idle`, then newest first within each group. Pressing `Tab` switches to alphabetical session groups and sorts newest `@ap_since` first within each session; pressing it again restores the default view. The current pane remains first in either view, and the order mode lasts only for the current picker. Session-only rows participate in the alphabetical session order. Looking at a pane turns its `done` state into `idle` automatically, so finished agents keep their place in the list.
+Rows put the pane currently active in the client that opened the picker first. Both views keep rows from the same tmux session together. In the default view, session groups rank by the best state tier present (`blocked`, `working`, `done`, `idle`) and newest state change; in the Tab view, groups sort by alphabetical session name after the current session and its numeric family. Within each group, the current pane remains first when present, followed by newest `@ap_since`. The first row is the unindented group root and later rows use `├─` or `└─` tree connectors; these are visual only and every row remains selectable. The order mode lasts only for the current picker. Session-only rows participate in session grouping. Looking at a pane turns its `done` state into `idle` automatically, so finished agents keep their place in the list.
 
 Agents detected from their process appear as `idle` with an age of `-`: the process name proves the agent is running, but it cannot report what it is doing.
 

@@ -184,15 +184,15 @@ assert_match $'blocked[[:space:]]+codex[[:space:]]' "$LIST" '(a) lists another a
 CODEX_ROW=$(printf '%s\n' "$LIST" | grep -F "$CODEX_PANE" | head -n 1)
 PI_ROW=$(printf '%s\n' "$LIST" | grep -F "$PI_PANE" | head -n 1)
 assert_eq ok "$(printf '%s\n' "$CODEX_ROW" | awk '$2 == "blocked" && $3 == "codex" && $4 ~ /^ap-test:/ { print "ok" }')" '(a) separates agent list columns'
-CODEX_LOCATION_COL=$(printf '%s\n' "$CODEX_ROW" | awk '{ match($0, /ap-test:[0-9]+\.[0-9]+/); print RSTART }')
-PI_LOCATION_COL=$(printf '%s\n' "$PI_ROW" | awk '{ match($0, /ap-test:[0-9]+\.[0-9]+/); print RSTART }')
+CODEX_LOCATION_COL=$(printf '%s\n' "$CODEX_ROW" | LC_ALL=C.UTF-8 awk '{ match($0, /ap-test:[0-9]+\.[0-9]+/); print RSTART }')
+PI_LOCATION_COL=$(printf '%s\n' "$PI_ROW" | LC_ALL=C.UTF-8 awk '{ match($0, /ap-test:[0-9]+\.[0-9]+/); print RSTART }')
 assert_match '^[0-9]+$' "$CODEX_LOCATION_COL" '(a) finds codex location column'
 assert_match '^[0-9]+$' "$PI_LOCATION_COL" '(a) finds pi location column'
-assert_eq "$CODEX_LOCATION_COL" "$PI_LOCATION_COL" '(a) aligns location columns'
+PI_ROW_ALIGNED=$(printf '%s\n' "$PI_ROW" | sed 's/   ├─/     /; s/   └─/     /')
 CODEX_AGE_COL=$(printf '%s\n' "$CODEX_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
-PI_AGE_COL=$(printf '%s\n' "$PI_ROW" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
-assert_eq "$CODEX_AGE_COL" "$PI_AGE_COL" '(a) aligns age columns'
-assert_match $'\tblocked {2}codex {2}ap-test:[0-9]+\.[0-9]+ {2}[0-9]+[smhd]' "$CODEX_ROW" '(a) pads columns with a two-space gutter'
+PI_AGE_COL=$(printf '%s\n' "$PI_ROW_ALIGNED" | awk '{ match($0, /[0-9]+[smhd]/); print RSTART }')
+assert_eq "$CODEX_AGE_COL" "$PI_AGE_COL" '(a) aligns ages after the tree slot'
+assert_match $'\tblocked {2}codex {3}ap-test:[0-9]+\.[0-9]+ {4}[0-9]+[smhd]' "$CODEX_ROW" '(a) reserves tree and right-column padding'
 TMUX_PANE=$PI_PANE "$ROOT/bin/agent-state" set 'Bad Name!' working
 assert_eq pi "$(pane_option "$PI_PANE" '#{@ap_agent}')" '(a) rejects invalid agent without writing'
 
@@ -202,12 +202,12 @@ git init -q -b feat/branch-label "$BRANCH_REPO"
 git -C "$BRANCH_REPO" -c user.name=t -c user.email=t@t commit -q --allow-empty -m init
 BRANCH_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n branch-pane -c "$BRANCH_REPO" 'exec sleep 3600')
 run_state "$BRANCH_PANE" set pi working
-BRANCH_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$BRANCH_PANE" | head -n 1)
-assert_match ' ap-test:feat/branch-label ' "$BRANCH_ROW" '(a2) shows branch for git panes'
+BRANCH_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$BRANCH_PANE" | head -n 1 | sed 's/ / /g')
+assert_match 'ap-test:feat/branch-label ' "$BRANCH_ROW" '(a2) shows branch for git panes'
 assert_eq ok "$(printf '%s\n' "$BRANCH_ROW" | awk '$0 !~ /ap-test:[0-9]+\.[0-9]+/ { print "ok" }')" '(a2) git panes drop window.pane'
 git -C "$BRANCH_REPO" checkout -q --detach
-DETACHED_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$BRANCH_PANE" | head -n 1)
-assert_match ' ap-test:[0-9a-f]{7,} ' "$DETACHED_ROW" '(a2) shows short sha for detached HEAD'
+DETACHED_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$BRANCH_PANE" | head -n 1 | sed 's/ / /g')
+assert_match 'ap-test:[0-9a-f]{7,} ' "$DETACHED_ROW" '(a2) shows short sha for detached HEAD'
 tmux_cmd kill-window -t "$BRANCH_PANE"
 
 # Subdirectories and linked worktrees resolve to their own branch.
@@ -218,16 +218,16 @@ SUB_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n branch-sub -
 WT_PANE=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n branch-wt -c "$TMP_ROOT/branch-worktree" 'exec sleep 3600')
 run_state "$SUB_PANE" set pi working
 run_state "$WT_PANE" set pi working
-BRANCH_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list)
-assert_match "$SUB_PANE"$'\t[^\n]* ap-test:feat/branch-label ' "$BRANCH_LIST" '(a2) subdirectory resolves to repo branch'
-assert_match "$WT_PANE"$'\t[^\n]* ap-test:wt/other ' "$BRANCH_LIST" '(a2) linked worktree resolves to its own branch'
+BRANCH_LIST=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | sed 's/ / /g')
+assert_match "$SUB_PANE"$'\t[^\n]*ap-test:feat/branch-label ' "$BRANCH_LIST" '(a2) subdirectory resolves to repo branch'
+assert_match "$WT_PANE"$'\t[^\n]*ap-test:wt/other ' "$BRANCH_LIST" '(a2) linked worktree resolves to its own branch'
 git -C "$BRANCH_REPO" branch -q long-branch-name-for-truncation-check-0123456789
 git -C "$BRANCH_REPO" checkout -q long-branch-name-for-truncation-check-0123456789
-LONG_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
-assert_match ' ap-test:long-branch-name-for-truncati[.][.][.] ' "$LONG_ROW" '(a2) caps the location column at 40 characters by default'
-CAPPED_ROW=$(TMUX_PANE= AP_LOCATION_MAX=20 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
-assert_match ' ap-test:long-bran[.][.][.] ' "$CAPPED_ROW" '(a2) caps the whole location column with an ellipsis'
-SESSION_CAPPED_ROW=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1)
+LONG_ROW=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1 | sed 's/ / /g')
+assert_match 'ap-test:long-branch-name-for-truncati[.][.][.] ' "$LONG_ROW" '(a2) caps the location column at 40 characters by default'
+CAPPED_ROW=$(TMUX_PANE= AP_LOCATION_MAX=20 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1 | sed 's/ / /g')
+assert_match 'ap-test:long-bran[.][.][.] ' "$CAPPED_ROW" '(a2) caps the whole location column with an ellipsis'
+SESSION_CAPPED_ROW=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --list | grep -F "$SUB_PANE" | head -n 1 | sed 's/ / /g')
 assert_match ' ap-[.][.][.]:long-branch-name-' "$SESSION_CAPPED_ROW" '(a2) truncates long session names in the location column'
 SESSION_CAPPED_META=$(TMUX_PANE= AP_SESSION_MAX=6 "$ROOT/bin/agent-pick" --rows | grep -F "$SUB_PANE" | head -n 1)
 assert_match $'\t'"ap-test"$'\t' "$SESSION_CAPPED_META" '(a2) session cap keeps the full session name for filtering'
@@ -301,11 +301,14 @@ tmux_cmd set-option -pt "${ORDER_PANES[2]}" @ap_since $((now - 20))
 tmux_cmd set-option -pt "${ORDER_PANES[3]}" @ap_since $((now - 30))
 tmux_cmd set-option -pt "${ORDER_PANES[4]}" @ap_since $((now - 40))
 ORDER=$(TMUX_PANE= "$ROOT/bin/agent-pick" --list | awk '$2 != "session" {print $1}' | paste -sd, -)
-EXPECTED=$(printf '%s,' "${ORDER_PANES[1]}" "${ORDER_PANES[0]}" "${ORDER_PANES[4]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" | sed 's/,$//')
+EXPECTED=$(printf '%s,' "${ORDER_PANES[1]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" "${ORDER_PANES[4]}" "${ORDER_PANES[0]}" | sed 's/,$//')
 assert_eq "$EXPECTED" "$ORDER" '(g) orders state tiers and newest first'
 
 CURRENT_FIRST=$(TMUX_PANE="${ORDER_PANES[4]}" "$ROOT/bin/agent-pick" --list | head -n 1 | cut -f1)
 assert_eq "${ORDER_PANES[4]}" "$CURRENT_FIRST" '(g2) puts the current pane first'
+CURRENT_GROUP_ORDER=$(TMUX_PANE="${ORDER_PANES[4]}" "$ROOT/bin/agent-pick" --list | awk '$2 != "session" {print $1}' | paste -sd, -)
+CURRENT_GROUP_EXPECTED=$(printf '%s,' "${ORDER_PANES[4]}" "${ORDER_PANES[1]}" "${ORDER_PANES[2]}" "${ORDER_PANES[3]}" "${ORDER_PANES[0]}" | sed 's/,$//')
+assert_eq "$CURRENT_GROUP_EXPECTED" "$CURRENT_GROUP_ORDER" '(g2) keeps the current pane first and recency follows within its session'
 
 CURRENT_CONTEXT_SHELL=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s current-context -c "$TMP_ROOT" 'exec sh')
 CURRENT_CONTEXT_AGENT=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t current-context: -n agent 'exec sleep 3600')
@@ -486,12 +489,17 @@ tmux_cmd set-option -pt "$ORDER_ALPHA_NEW" @ap_since $((now - 10))
 tmux_cmd set-option -pt "$ORDER_ZULU_NEW" @ap_since $((now - 20))
 tmux_cmd set-option -pt "$ORDER_ZULU_OLD" @ap_since $((now - 40))
 SESSION_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows --order session | \
-  sed -E $'s/\033\\[[0-9;]*m//g' | \
-  awk -F '\t' '$2 ~ /^order-(alpha|beta|zulu)$/ { if ($3 ~ /^session /) print "session:" $2; else { split($3, fields, /[[:space:]]+/); print fields[1] ":" $2 } }')
+  sed -E $'s/\033\\[[0-9;]*m//g; s/^[ ]+//' | \
+  awk -F '\t' '$2 ~ /^order-(alpha|beta|zulu)$/ { sub(/^[ ]+/, "", $3); if ($3 ~ /^session /) print "session:" $2; else { split($3, fields, /[[:space:]]+/); print fields[1] ":" $2 } }')
 EXPECTED_SESSION_ROWS=$(printf '%s\n' \
   'idle:order-alpha' 'blocked:order-alpha' 'session:order-beta' \
   'working:order-zulu' 'done:order-zulu')
 assert_eq "$EXPECTED_SESSION_ROWS" "$SESSION_ROWS" '(o-order) groups rows by alphabetical session and newest first'
+SESSION_TREE_ROWS=$(TMUX_PANE= "$ROOT/bin/agent-pick" --rows --order session | \
+  sed -E $'s/\033\\[[0-9;]*m//g; s/^[ ]+//' | \
+  awk -F '\t' '$2 == "order-alpha" { sub(/^[ ]+/, "", $3); print $0 }')
+[[ $SESSION_TREE_ROWS == *'└─'* ]] || fail '(o-order) renders a connector for the final session child'
+assert_eq 2 "$(printf '%s\n' "$SESSION_TREE_ROWS" | wc -l | tr -d ' ')" '(o-order) keeps both session rows visible'
 
 # (o-order-related) the current session's numeric-name family stays together.
 RELATED_CURRENT=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s up-dev-cli-2 -c "$TMP_ROOT" 'exec sleep 3600')
@@ -574,7 +582,7 @@ SCREEN=$(tmux_cmd capture-pane -p -t "$PICKER")
 [[ $SCREEN =~ (blocked|done|idle|working)[[:space:]]+pi[[:space:]]+ap-test: ]] || fail '(o) keeps agent locations visible'
 [[ $SCREEN =~ [0-9]+[smhd] ]] || fail '(o) keeps agent ages visible'
 ORDER=$(printf '%s\n' "$SCREEN" | grep -E 'blocked[[:space:]]+pi|done[[:space:]]+pi|idle[[:space:]]+pi|working[[:space:]]+pi' | sed -E 's/.*(blocked|done|idle|working)[[:space:]]+pi.*/\1/' | paste -sd, -)
-assert_eq 'blocked,blocked,working,done,idle' "$ORDER" '(o) preserves computed row order'
+assert_eq 'blocked,done,idle,working,blocked' "$ORDER" '(o) preserves grouped recency order'
 ok '(o) shows ordered agent rows'
 [[ $SCREEN != *'type to filter'* ]] || fail '(o) hides input in normal mode'
 ok '(o) hides input in normal mode'
@@ -583,7 +591,9 @@ ok '(o) footer advertises the kill key'
 
 # (o-order-ui) Tab toggles between the default and session-oriented views.
 ORDER_ALPHA_OLD=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-alpha -c "$TMP_ROOT" 'exec sleep 3600')
-ORDER_ALPHA_NEW=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-alpha: -n newer 'exec sleep 3600')
+ORDER_ALPHA_NEW=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-alpha: -n newer -c "$BRANCH_REPO" 'exec sleep 3600')
+tmux_cmd select-pane -t "$ORDER_ALPHA_NEW" -T col-A
+tmux_cmd select-pane -t "$ORDER_ALPHA_OLD" -T col-B
 ORDER_BETA=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-beta -c "$TMP_ROOT" 'exec sleep 3600')
 ORDER_ZULU_NEW=$(tmux_cmd new-session -d -P -F '#{pane_id}' -s order-zulu -c "$TMP_ROOT" 'exec sleep 3600')
 ORDER_ZULU_OLD=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t order-zulu: -n older 'exec sleep 3600')
@@ -596,7 +606,11 @@ tmux_cmd set-option -pt "$ORDER_ALPHA_NEW" @ap_since $((now - 10))
 tmux_cmd set-option -pt "$ORDER_ZULU_NEW" @ap_since $((now - 20))
 tmux_cmd set-option -pt "$ORDER_ZULU_OLD" @ap_since $((now - 40))
 order_fixture_rows() {
-  picker_rows "$1" | awk '$0 ~ /order-(alpha|beta|zulu)/ { if ($1 == "session") print "session:" $2; else { location = $3; sub(/:.*/, "", location); print $1 ":" location } }'
+  picker_rows "$1" | awk '
+    /order-alpha/ { print $1 ":order-alpha" }
+    /order-beta/ { print "session:order-beta" }
+    /order-zulu/ { print $1 ":order-zulu" }
+  '
 }
 wait_for_order_rows() {
   local pane=$1 expected=$2 actual=''
@@ -609,21 +623,36 @@ wait_for_order_rows() {
     "$pane" "$expected" "$actual" >&2
   return 1
 }
+assert_picker_column_alignment() {
+  local pane=$1 label=$2 screen positions first
+  screen=$(tmux_cmd capture-pane -p -t "$pane")
+  # Convert known single-cell glyphs to ASCII before measuring screen columns.
+  positions=$(LC_ALL=C awk '
+    /col-[AB]/ {
+      gsub(/├─|└─/, "  ")
+      gsub(/▌/, " ")
+      if (match($0, /[0-9]+[smhd] +col-[AB]/))
+        print RSTART ":" index($0, "col-")
+    }' <<< "$screen")
+  first=${positions%%$'\n'*}
+  [[ $positions == "$first"$'\n'"$first" ]] || printf '%s\n' "$screen" >&2
+  assert_eq "$first"$'\n'"$first" "$positions" "$label"
+}
 ORDER_PICKER=$(tmux_cmd new-window -d -P -F '#{pane_id}' -t ap-test: -n ap-order-picker "exec \"$INSTALL_ROOT/bin/agent-pick\"")
 wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) picker did not start'
 assert_eq "$(printf '%s\n' \
-  'blocked:order-alpha' 'working:order-zulu' 'done:order-zulu' \
-  'idle:order-alpha' 'session:order-beta')" \
-  "$(order_fixture_rows "$ORDER_PICKER")" '(o-order-ui) starts in default order'
+  'idle:order-alpha' 'blocked:order-alpha' 'working:order-zulu')" \
+  "$(order_fixture_rows "$ORDER_PICKER")" '(o-order-ui) starts with contiguous session groups'
+assert_picker_column_alignment "$ORDER_PICKER" '(o-order-ui) aligns age and title across parent and child'
 SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
 [[ $SCREEN == *'Tab session order'* ]] || fail '(o-order-ui) shows the default order hint'
 ok '(o-order-ui) shows the default order hint'
 tmux_cmd send-keys -t "$ORDER_PICKER" Tab
 wait_for "$ORDER_PICKER" 'Tab state order' || fail '(o-order-ui) Tab switches to session ordering'
 wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
-  'idle:order-alpha' 'blocked:order-alpha' 'session:order-beta' \
-  'working:order-zulu' 'done:order-zulu')" || fail '(o-order-ui) Tab groups by session'
+  'idle:order-alpha' 'blocked:order-alpha')" || fail '(o-order-ui) Tab groups by session'
 ok '(o-order-ui) Tab switches to session ordering'
+assert_picker_column_alignment "$ORDER_PICKER" '(o-order-ui) keeps age and title aligned after Tab'
 tmux_cmd send-keys -t "$ORDER_PICKER" /
 wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-order-ui) filter opens in session order'
 SCREEN=$(tmux_cmd capture-pane -p -t "$ORDER_PICKER")
@@ -634,8 +663,7 @@ wait_for_normal "$ORDER_PICKER" || fail '(o-order-ui) Esc leaves session-order f
 tmux_cmd send-keys -t "$ORDER_PICKER" Tab
 wait_for "$ORDER_PICKER" 'Tab session order' || fail '(o-order-ui) Tab restores default ordering'
 wait_for_order_rows "$ORDER_PICKER" "$(printf '%s\n' \
-  'blocked:order-alpha' 'working:order-zulu' 'done:order-zulu' \
-  'idle:order-alpha' 'session:order-beta')" || fail '(o-order-ui) restored default order'
+  'idle:order-alpha' 'blocked:order-alpha' 'working:order-zulu')" || fail '(o-order-ui) restored grouped order'
 ok '(o-order-ui) second Tab restores default order'
 tmux_cmd send-keys -t "$ORDER_PICKER" /
 wait_for "$ORDER_PICKER" 'type to filter' || fail '(o-order-ui) filter opens after order toggles'

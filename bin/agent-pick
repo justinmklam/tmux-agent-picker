@@ -233,11 +233,10 @@ list_agents() {
   local tier age display current_rank window_active pane_active
   local panes session_pane sessions_with_agents='' pending=''
   local session_count=0 i
-  local -a sort_args
   local format=$'#{pane_id}\x1f#{@ap_state}\x1f#{@ap_since}\x1f#{@ap_agent}\x1f#{session_name}\x1f#{window_index}\x1f#{pane_index}\x1f#{pane_current_command}\x1f#{pane_title}\x1f#{session_id}\x1f#{pane_pid}\x1f#{window_active}\x1f#{pane_active}\x1f#{pane_current_path}'
   case "$sort_order" in
-    session) sort_args=(-k1,1n -k6,6 -k3,3nr -k4,4 -k5,5) ;;
-    *) sort_order=state; sort_args=(-k1,1n -k2,2n -k3,3nr -k4,4 -k5,5) ;;
+    session) ;;
+    *) sort_order=state ;;
   esac
   {
     AGENT_NAMES=$(agent_names)
@@ -323,8 +322,40 @@ list_agents() {
       printf '%s\t4\t0\t%s\t%s\t%s\tsession %s\n' "$current_rank" "$session_pane" "$session_pane" "$session_name" "$session_name"
     done < <($TMUX_BIN list-sessions -F $'#{session_id}\x1f#{session_name}' 2>/dev/null || true)
   } |
-    LC_ALL=C sort -t $'\t' "${sort_args[@]}" |
-    awk -v metadata="$metadata" -v loc_cap="${AP_LOCATION_MAX:-40}" -v session_cap="${AP_SESSION_MAX:-24}" -F '\t' '
+    awk -v order="$sort_order" -v current_pane="$current_pane" -F '\t' '
+      {
+        session = $6
+        if ($5 == current_pane) current_session = session
+        if (!(session in best_tier) || $2 < best_tier[session]) best_tier[session] = $2
+        if (!(session in latest) || $3 > latest[session]) latest[session] = $3
+        rows[NR] = $0
+        row_session[NR] = session
+      }
+      END {
+        current_family = current_session
+        sub(/-[0-9]+$/, "", current_family)
+        for (i = 1; i <= NR; i++) {
+          session = row_session[i]
+          session_family = session
+          sub(/-[0-9]+$/, "", session_family)
+          if (session == current_session) group_rank = 0
+          else if (session_family == current_family) group_rank = 1
+          else group_rank = 2
+          if (order == "session") {
+            group_tier = 0
+            group_latest = 0
+          } else {
+            group_tier = best_tier[session]
+            group_latest = latest[session]
+          }
+          split(rows[i], fields, "\t")
+          printf "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", \
+            group_rank, group_tier, group_latest, session, fields[1], fields[3], rows[i]
+        }
+      }' |
+    LC_ALL=C sort -t $'\t' -k1,1n -k2,2n -k3,3nr -k4,4 -k5,5n -k6,6nr -k7,7 |
+    cut -f7- |
+    LC_ALL=C.UTF-8 awk -v metadata="$metadata" -v loc_cap="${AP_LOCATION_MAX:-40}" -v session_cap="${AP_SESSION_MAX:-24}" -F '\t' '
       {
         pane[NR] = $5
         session_name[NR] = $6
@@ -350,12 +381,22 @@ list_agents() {
       END {
         for (i = 1; i <= NR; i++) {
           if (agent_row[i]) {
+            tree = "   "
+            tree_pad = 2
+            if (i > 1 && agent_row[i - 1] && session_name[i - 1] == session_name[i]) {
+              if (i < NR && agent_row[i + 1] && session_name[i + 1] == session_name[i]) tree = "   ├─"
+              else tree = "   └─"
+              tree_pad = 0
+            }
+            # Reserve the connector cells after root locations, and keep
+            # invisible colour markers out of the padding calculation.
+            padding = max_location - length(location[i]) + tree_pad
             if (metadata) {
               shown = length(session_shown[i]) < length(location[i]) ? length(session_shown[i]) : length(location[i])
               marked_location = sprintf("%c%s%c%s", 30, substr(location[i], 1, shown), 31, substr(location[i], shown + 1))
-              printf "%s\t%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], session_name[i], state[i], max_agent, agent[i], max_location + 2, marked_location, age[i], title[i]
+              printf "%s\t%s\t   %-3s  %-*s%s%s%*s  %-4s  %s\n", pane[i], session_name[i], state[i], max_agent, agent[i], tree, marked_location, padding, "", age[i], title[i]
             } else {
-              printf "%s\t%-3s  %-*s  %-*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], max_location, location[i], age[i], title[i]
+              printf "%s\t%-3s  %-*s%s%s%*s  %-4s  %s\n", pane[i], state[i], max_agent, agent[i], tree, location[i], padding, "", age[i], title[i]
             }
           } else if (metadata) {
             printf "%s\t%s\tsession %c%s%c\n", pane[i], session_name[i], 30, session_name[i], 31
@@ -369,6 +410,9 @@ list_agents() {
 has_agent_rows() {
   local pane session display state
   while IFS=$'\t' read -r pane session display; do
+    case $display in
+      '   '*) display=${display:3} ;;
+    esac
     state=${display%%[[:space:]]*}
     case "$state" in
       blocked|done|idle|working) return 0 ;;
@@ -399,7 +443,7 @@ load_session_colours() {
 }
 
 colour_agents() {
-  local pane session display state colour rest session_colour
+  local pane session display state colour rest session_colour prefix state_padded
   local session_list palette_index
   local marker_start=$'\036' marker_end=$'\037' reset=$'\033[0m'
   local -a row_panes row_sessions row_displays sessions palette_indices
@@ -451,16 +495,25 @@ colour_agents() {
       display=${display//$marker_start/}
       display=${display//$marker_end/}
     fi
+    prefix=''
+    state_padded=0
+    case $display in
+      '   '*) prefix=$'\033[0m   '; display=${display:3} ;;
+    esac
     state=${display%%[[:space:]]*}
     rest=${display#*[[:space:]]}
     case "$state" in
-      blocked) colour='\033[31m' ;;
-      done) colour='\033[32m' ;;
-      idle) colour='\033[2m' ;;
-      working) colour='\033[33m' ;;
+      blocked) colour='\033[31m'; state_padded=1 ;;
+      done) colour='\033[32m'; state_padded=1 ;;
+      idle) colour='\033[2m'; state_padded=1 ;;
+      working) colour='\033[33m'; state_padded=1 ;;
       *) colour='' ;;
     esac
-    printf '%s\t%s\t%b%s\033[0m\t%s\n' "$pane" "$session" "$colour" "$state" "$rest"
+    if (( state_padded )); then
+      printf '%s\t%s\t%s%b%-7s\033[0m  %s\t%s\n' "$pane" "$session" "$prefix" "$colour" "$state" "$rest"
+    else
+      printf '%s\t%s\t%s%s\033[0m\t%s\n' "$pane" "$session" "$prefix" "$state" "$rest"
+    fi
   done
 }
 
